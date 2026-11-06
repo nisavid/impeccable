@@ -1,5 +1,26 @@
 # Project Instructions for Claude
 
+## Agent skills
+
+Follow the fork scope and
+[Operating Policy](AGENTS.md#operating-policy) in `AGENTS.md`.
+
+### Issue tracker
+
+Create issues in `nisavid/impeccable` on GitHub, verify their linked Linear
+counterparts in workspace `nisavid`, team `IDV`, then manage them in Linear
+where supported. Read `docs/agents/issue-tracker.md` before tracker work.
+
+### Triage labels
+
+Use the shared canonical triage labels. Read `docs/agents/triage-labels.md`
+before applying or changing them.
+
+### Domain docs
+
+Use a single domain context: root `GLOSSARY.md` and `docs/adr/`. Read
+`docs/agents/domain.md` before exploring, planning, or editing.
+
 ## Architecture (v3.0+)
 
 There is **one** user-invocable skill, `impeccable`, with **24 commands** underneath it. Users type `/impeccable polish`, `/impeccable audit`, etc. The skill is defined in `skill/`:
