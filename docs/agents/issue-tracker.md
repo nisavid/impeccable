@@ -31,10 +31,11 @@ native parent/sub-issue and blocking relations, or public updates, that the
 integration does not carry. Verify both representations and reconcile missing
 relations through supported controls before relying on the graph.
 
-Treat titles, descriptions, labels, state, and identified GitHub-synced comment
-threads as public. Keep private Linear comments outside those threads, and
-check a comment's destination before posting. Never put private context into
-synced fields or comments.
+Treat every property or thread synchronized to GitHub as public, including
+titles, descriptions, state, priority, labels, assignees, sub-issue relations,
+and identified synchronized comment threads. Keep private Linear comments
+outside those threads, and check a comment's destination before posting.
+Never put private context into synced fields or comments.
 
 Use the existing state mappings and the labels in `triage-labels.md`.
 Check actual propagation after a state or label change, including changes to
