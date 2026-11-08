@@ -14,6 +14,8 @@ This plan establishes the evidence required to publish the first repack and enab
 
 Build from pinned inputs into a new isolated output directory. Repeated construction from the same inputs must yield the same archive bytes and inventory. The implementation must provide a documented command for this build and its validation, with expected inputs, outputs, exit statuses, and retained evidence.
 
+The offline allocator, builder, and validation commands are documented in the [repack procedure](repack-procedure.md). Load that procedure from the reviewed implementation revision before constructing a candidate.
+
 The required checks are:
 
 - Every copied upstream file matches the selected input byte for byte; expected executable modes survive. The selected subtree is complete and every referenced support file exists.
