@@ -184,6 +184,81 @@ test('distinguishes escaped syntax, code, and nested inline link labels', () => 
   );
 });
 
+const blockLinkCases = [
+  {
+    boundary: 'ATX headings',
+    content: target => `# First \`\n[guide](${target})\n## Second \``,
+  },
+  {
+    boundary: 'a thematic break',
+    content: target => `First \`\n* * *\n[guide](${target}) \``,
+  },
+  {
+    boundary: 'a Setext heading',
+    content: target => `First \`\n===\n[guide](${target}) \``,
+  },
+];
+for (const { boundary, content } of blockLinkCases) {
+  test(`keeps inline links visible across ${boundary}`, () => {
+    assert.doesNotThrow(() => buildCandidate(guide(content('guide.md'))));
+    assert.throws(
+      () => buildCandidate(guide(content('missing.md'))),
+      { message: 'Missing or escaping relative support reference: reference/guide.md: missing.md' },
+    );
+  });
+}
+
+test('ignores multiline code spans inside a block and checks links inside headings', () => {
+  const code = 'First ``\n[example](missing.md)\nlast line``';
+  assert.doesNotThrow(() => buildCandidate(guide(code + '\n## [present](guide.md)')));
+  assert.throws(
+    () => buildCandidate(guide(code + '\n## [missing](missing-heading.md)')),
+    { message: 'Missing or escaping relative support reference: reference/guide.md: missing-heading.md' },
+  );
+});
+
+test('checks the inner link and treats its outer link syntax as plain text', () => {
+  assert.doesNotThrow(() => buildCandidate(guide('[Read [guide](guide.md)](missing-outer.md)')));
+  assert.doesNotThrow(() => buildCandidate(guide('[Read [site](https://example.invalid)](missing-outer.md)')));
+  assert.throws(
+    () => buildCandidate(guide('[Read [guide](missing-inner.md)](guide.md)')),
+    { message: 'Missing or escaping relative support reference: reference/guide.md: missing-inner.md' },
+  );
+  assert.throws(
+    () => buildCandidate(guide('[Read [guide]](missing.md)')),
+    { message: 'Missing or escaping relative support reference: reference/guide.md: missing.md' },
+  );
+});
+
+test('checks both an inline image and the enclosing link', () => {
+  assert.doesNotThrow(() => buildCandidate(guide('[![image](guide.md)](../SKILL.md)')));
+  for (const link of ['[![image](guide.md)](missing.md)', '[![image](missing.md)](../SKILL.md)']) {
+    assert.throws(
+      () => buildCandidate(guide(link)),
+      { message: 'Missing or escaping relative support reference: reference/guide.md: missing.md' },
+    );
+  }
+});
+
+test('resolves relative destinations to the skill root and rejects escapes', () => {
+  assert.doesNotThrow(() => buildCandidate(guide('[parent](..) [root](<../>) [normalized](../reference/..) [current](./)')));
+  for (const target of ['../missing.md', '../..', '../../SKILL.md', '%2e%2e/%2e%2e/', '/guide.md']) {
+    assert.throws(
+      () => buildCandidate(guide(`[bad](${target})`)),
+      { message: `Missing or escaping relative support reference: reference/guide.md: ${target}` },
+    );
+  }
+});
+
+test('checks percent-decoded local paths and ignores fragment-only, external, and template destinations', () => {
+  const content = '[encoded](../%53KILL.md#heading) [section](#heading) [site](https://example.invalid) [template]({{path}})';
+  assert.doesNotThrow(() => buildCandidate(guide(content)));
+  assert.throws(
+    () => buildCandidate(guide('[encoded](%6Dissing.md#heading)')),
+    { message: 'Missing or escaping relative support reference: reference/guide.md: %6Dissing.md' },
+  );
+});
+
 test('identifies the referring file and target when an inline link has invalid encoding', () => {
   assert.throws(() => buildCandidate(guide('[invalid](bad%ZZ.md)')), /Invalid percent encoding in relative support reference: reference\/guide\.md: bad%ZZ\.md/);
 });

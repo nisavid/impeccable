@@ -75,9 +75,10 @@ function firstRunAtOrAfter(positions = [], index) {
   return positions[left];
 }
 
-function* paragraphDestinations(text) {
+function* blockDestinations(text) {
   const backticks = backtickRuns(text);
-  let labels = 0;
+  const openers = [];
+  let linksFound = 0;
   let index = 0;
   while (index < text.length) {
     const character = text[index];
@@ -93,12 +94,19 @@ function* paragraphDestinations(text) {
       index = closing === undefined ? end : closing + width;
       continue;
     }
-    if (character === '[') labels++;
-    if (character === ']' && labels > 0) {
-      labels--;
-      if (text[index + 1] === '(') {
+    if (character === '!' && text[index + 1] === '[') {
+      openers.push({ image: true });
+      index += 2;
+      continue;
+    }
+    if (character === '[') openers.push({ image: false, linksFound });
+    if (character === ']' && openers.length) {
+      const opener = openers.pop();
+      // A recognized link makes earlier link openers ineligible.
+      if (text[index + 1] === '(' && (opener.image || opener.linksFound === linksFound)) {
         const link = readLink(text, index + 2);
         if (link) {
+          if (!opener.image) linksFound++;
           yield link.destination;
           index = link.end;
           continue;
@@ -109,8 +117,7 @@ function* paragraphDestinations(text) {
   }
 }
 
-// Fences remove whole lines and blank lines separate inline grammar contexts.
-export function* inlineLinkDestinations(markdown) {
+function* inlineBlocks(markdown) {
   let fence;
   let paragraph = [];
   for (const line of markdown.split(/\r\n?|\n/)) {
@@ -120,12 +127,20 @@ export function* inlineLinkDestinations(markdown) {
       continue;
     }
     if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) fence = marker[1];
-    if (fence || /^[ \t]*$/.test(line)) {
-      yield* paragraphDestinations(paragraph.join('\n'));
+    const atxHeading = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line);
+    const setextUnderline = paragraph.length > 0 && /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
+    const thematicBreak = /^ {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$/.test(line);
+    if (fence || atxHeading || setextUnderline || thematicBreak || /^[ \t]*$/.test(line)) {
+      if (paragraph.length) yield paragraph.join('\n');
       paragraph = [];
+      if (atxHeading) yield line;
     } else {
       paragraph.push(line);
     }
   }
-  yield* paragraphDestinations(paragraph.join('\n'));
+  if (paragraph.length) yield paragraph.join('\n');
+}
+
+export function* inlineLinkDestinations(markdown) {
+  for (const block of inlineBlocks(markdown)) yield* blockDestinations(block);
 }

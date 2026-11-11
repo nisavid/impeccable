@@ -88,9 +88,11 @@ function validateSupportLinks(skill, files) {
       } catch {
         fail(`Invalid percent encoding in relative support reference: ${file.name}: ${target}`);
       }
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), decoded));
+      const resolved = path.posix.join(path.posix.dirname(file.name), decoded);
       const directory = resolved.replace(/\/$/, '');
-      if (resolved.startsWith('../') || resolved.startsWith('/') || !(files.has(resolved) || skill.some(entry => entry.name.startsWith(`${directory}/`)))) {
+      const escapesRoot = path.posix.isAbsolute(decoded) || directory === '..' || directory.startsWith('../');
+      const missing = directory !== '.' && !files.has(resolved) && !skill.some(entry => entry.name.startsWith(`${directory}/`));
+      if (escapesRoot || missing) {
         fail(`Missing or escaping relative support reference: ${file.name}: ${target}`);
       }
     }

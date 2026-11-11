@@ -105,13 +105,13 @@ Compare both archives and both `candidate.json` files byte for byte across the i
 
 The ZIP reader validates central/local path agreement, CRCs, bounds, entry ownership, unique relative paths, regular Unix file types, and size limits. It rejects links, special or privileged modes, traversal, case collisions, file/directory collisions, Windows device names, split archives, encryption, and ZIP64. Stored output entries use sorted paths and fixed timestamps, avoiding compression-version differences. Input archives are limited to 256 MiB compressed and expanded, with at most 20,000 entries. An upstream shape outside these bounds requires investigation.
 
-The support check requires the enrolled paths and checks relative destinations in inline Markdown links. The supported form is `[label](destination "optional title")`. The label can contain balanced nested brackets and code spans. Within a paragraph, spaces, tabs, and line breaks can surround the destination and separate it from the title.
+The support check requires the enrolled paths and checks relative destinations in inline Markdown links. The supported form is `[label](destination "optional title")`. The label can contain balanced nested brackets, code spans, and inline images. A recognized inner link makes its enclosing link label ineligible. Within a paragraph, spaces, tabs, and line breaks can surround the destination and separate it from the title.
 
 - A bare destination has balanced parentheses and no unescaped whitespace or angle brackets. An angle-bracket destination is delimited by `<` and `>` on one line.
 - An optional title follows whitespace and uses matching single or double quotes. A backslash escapes ASCII punctuation in labels, destinations, and titles.
-- Matching backtick runs delimit code spans. The check skips those spans and line-leading backtick or tilde fences with up to three spaces of indentation.
+- Matching backtick runs within one inline block delimit code spans, including spans across line breaks. Blank lines, ATX headings, Setext underlines, thematic breaks, and fences separate inline blocks. The check skips code spans and line-leading backtick or tilde fences with up to three spaces of indentation.
 
-The builder resolves recognized relative targets against the referring file, after removing fragments and decoding percent escapes. The check covers this inline grammar and the enrolled paths. Dynamic references, external URLs, and client discovery require separate evidence.
+The builder resolves recognized relative targets against the referring file, after removing fragments and decoding percent escapes. A normalized path to the skill root is valid. Missing paths and paths outside that root fail the check. The check covers this inline grammar and the enrolled paths. Dynamic references, external URLs, and client discovery require separate evidence.
 
 Run deterministic launcher, actual-engine, and hook fixtures separately, recording the actual engine path, version, and digest. Then complete each consumer route's observations before qualification. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
 
