@@ -19,15 +19,16 @@ function isReservationBinding(binding) {
     typeof binding.inputsSha256 === 'string' && /^[0-9a-f]{64}$/.test(binding.inputsSha256);
 }
 
+const reservationFields = ['schema', 'version', 'upstream', 'binding', 'advance', 'exposureInventory', 'exposureInventorySha256'];
+
 function reservationBytes(reservation) {
-  const { schema, version, upstream, binding, advance, exposureInventory, exposureInventorySha256 } = reservation ?? {};
-  return jsonBytes({ schema, version, upstream, binding, advance, exposureInventory, exposureInventorySha256 });
+  return jsonBytes(Object.fromEntries(reservationFields.map(field => [field, reservation[field]])));
 }
 
 function readReservation(filename) {
   const bytes = readFileSync(filename);
   const reservation = JSON.parse(bytes);
-  if (!bytes.equals(reservationBytes(reservation))) {
+  if (!reservation || !reservationFields.every(field => Object.hasOwn(reservation, field)) || !bytes.equals(reservationBytes(reservation))) {
     throw new Error(`Reservation must match the exact serialization emitted by reserve: ${path.basename(filename)}`);
   }
   return { reservation, bytes };

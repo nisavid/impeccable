@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs, { mkdtempSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { mkdtempSync, readFileSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -135,7 +135,7 @@ test('reconciles matching local and exposure identities and rejects conflicting 
 test('preserves retained reservations with invalid schemas or unresolved bindings', t => {
   const request = reservationRequest(t);
   const filename = 'repack-v4.8.0.json';
-  const reservation = { schema: 1, version: '4.8.0', binding: request.binding };
+  const reservation = reserveCandidate(request);
   const variants = [
     { version: reservation.version },
     { ...reservation, schema: 2 },
@@ -148,7 +148,10 @@ test('preserves retained reservations with invalid schemas or unresolved binding
   for (const record of variants) {
     const retained = jsonBytes(record);
     writeFileSync(path.join(request.directory, filename), retained);
-    assert.throws(() => reserveCandidate(request), /Retained reservation needs schema 1 and immutable procedure and input identities/);
+    const expected = record.binding === undefined
+      ? /Reservation must match the exact serialization emitted by reserve/
+      : /Retained reservation needs schema 1 and immutable procedure and input identities/;
+    assert.throws(() => reserveCandidate(request), expected);
     assert.deepEqual(readdirSync(request.directory), [filename]);
     assert.deepEqual(readFileSync(path.join(request.directory, filename)), retained);
   }
@@ -156,9 +159,10 @@ test('preserves retained reservations with invalid schemas or unresolved binding
 
 test('rejects misnamed local reservations and releases the allocation lock', t => {
   const request = reservationRequest(t);
-  writeFileSync(path.join(request.directory, 'repack-v4.8.0.json'), jsonBytes({ version: '4.9.0' }));
+  reserveCandidate(request);
+  renameSync(path.join(request.directory, 'repack-v4.8.0.json'), path.join(request.directory, 'repack-v4.9.0.json'));
   assert.throws(() => reserveCandidate(request), /Reservation filename and version disagree/);
-  assert.deepEqual(readdirSync(request.directory), ['repack-v4.8.0.json']);
+  assert.deepEqual(readdirSync(request.directory), ['repack-v4.9.0.json']);
 });
 
 test('reports filesystem errors acquiring the lock separately from contention', t => {

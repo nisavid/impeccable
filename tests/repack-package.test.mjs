@@ -452,8 +452,11 @@ test('CLI builds, validates, and reconciles only the exact serialized reservatio
   const reordered = json({ version: reservation.version, ...reservation });
   assert.deepEqual(JSON.parse(reordered), reservation);
   assert.notDeepEqual(reordered, original);
+  assert.equal(reservation.advance, false);
+  const withoutAdvance = { ...reservation };
+  delete withoutAdvance.advance;
   const retry = path.join(root, 'retry');
-  for (const rewritten of [original.subarray(0, -1), reordered]) {
+  for (const rewritten of [json(withoutAdvance), original.subarray(0, -1), reordered]) {
     writeFileSync(filename, rewritten);
     for (const args of [['build', requestFile, retry], ['validate', requestFile, output], ['reserve', reconcileFile]]) {
       const result = run(...args);
@@ -461,6 +464,7 @@ test('CLI builds, validates, and reconciles only the exact serialized reservatio
       assert.match(result.stderr, /Reservation must match the exact serialization emitted by reserve/);
     }
     assert.equal(existsSync(retry), false);
+    assert.equal(existsSync(path.join(directory, '.allocation-lock')), false);
     assert.deepEqual(readdirSync(directory).sort(), inventory);
     assert.deepEqual(readFileSync(filename), rewritten);
     assert.deepEqual(readFileSync(archivePath), archive);
@@ -485,6 +489,7 @@ test('CLI builds, validates, and reconciles only the exact serialized reservatio
   writeFileSync(filename, original);
   const restored = run('validate', requestFile, output);
   assert.equal(restored.status, 0, restored.stderr);
+  assert.deepEqual(readFileSync(filename), original);
 });
 
 test('CLI rejects procedure changes and retained archive disagreement under the same reservation', t => {
