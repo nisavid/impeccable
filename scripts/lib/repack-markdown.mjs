@@ -121,12 +121,14 @@ function* inlineBlocks(markdown) {
   let fence;
   let paragraph = [];
   for (const line of markdown.split(/\r\n?|\n/)) {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/s.exec(line);
     if (fence) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+      const closer = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (closer && closer[1][0] === fence[0] && closer[1].length >= fence.length && !closer[2].trim()) fence = undefined;
       continue;
     }
-    if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) fence = marker[1];
+    // Opening info strings can contain Unicode separators within a CR/LF-split line.
+    const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/s.exec(line);
+    if (opener && (opener[1][0] === '~' || !opener[2].includes('`'))) fence = opener[1];
     const atxHeading = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line);
     const setextUnderline = paragraph.length > 0 && /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
     const thematicBreak = /^ {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$/.test(line);

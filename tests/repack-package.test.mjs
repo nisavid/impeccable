@@ -129,6 +129,21 @@ test('skips fenced examples when the opening info string contains Unicode line s
   }
 });
 
+test('keeps marker-like body lines with Unicode line separators inside fences', () => {
+  for (const marker of ['~~~', '```']) {
+    for (const separator of ['\u2028', '\u2029']) {
+      const open = `${marker}md\n${marker} ${separator} `;
+      const missing = '\n[missing](after-fence.md)';
+      const expected = { message: 'Missing or escaping relative support reference: reference/guide.md: after-fence.md' };
+      assert.throws(() => buildCandidate(guide(`${open}\n${marker}${missing}`)), expected);
+
+      const fence = `${open}\n[example](inside-fence.md)\n${marker}`;
+      assert.doesNotThrow(() => buildCandidate(guide(fence + '\n[present](guide.md)')));
+      assert.throws(() => buildCandidate(guide(fence + missing)), expected);
+    }
+  }
+});
+
 test('checks relative links with single-quoted titles', () => {
   assert.doesNotThrow(() => buildCandidate(guide("[present](../SKILL.md 'Skill title')")));
   assert.throws(
