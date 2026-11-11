@@ -121,7 +121,7 @@ function* inlineBlocks(markdown) {
   let fence;
   let paragraph = [];
   for (const line of markdown.split(/\r\n?|\n/)) {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/s.exec(line);
     if (fence) {
       if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
       continue;

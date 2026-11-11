@@ -116,6 +116,19 @@ test('checks real inline links while ignoring code spans and indented fences', (
   assert.throws(() => buildCandidate(guide(examples + '\n\n[real](missing.md)')), /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/);
 });
 
+test('skips fenced examples when the opening info string contains Unicode line separators', () => {
+  for (const marker of ['~~~', '```']) {
+    for (const separator of ['\u2028', '\u2029']) {
+      const fence = `${marker}text${separator}example\n[example](inside-fence.md)\n${marker}`;
+      assert.doesNotThrow(() => buildCandidate(guide(fence + '\n[present](guide.md)')));
+      assert.throws(
+        () => buildCandidate(guide(fence + '\n[missing](after-fence.md)')),
+        { message: 'Missing or escaping relative support reference: reference/guide.md: after-fence.md' },
+      );
+    }
+  }
+});
+
 test('checks relative links with single-quoted titles', () => {
   assert.doesNotThrow(() => buildCandidate(guide("[present](../SKILL.md 'Skill title')")));
   assert.throws(
