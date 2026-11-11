@@ -97,8 +97,11 @@ test('rejects runtime inventory changes, new literal origins and nested skills',
   assert.throws(() => buildCandidate(fixture(files => files.push(file('reference/SKILL.md', '')))), /Unexpected nested skill/);
 });
 
-function guide(content) {
-  return fixture(files => { files.find(entry => entry.name === 'reference/guide.md').bytes = Buffer.from(content); });
+function guide(content, extraFiles = []) {
+  return fixture(files => {
+    files.find(entry => entry.name === 'reference/guide.md').bytes = Buffer.from(content);
+    files.push(...extraFiles);
+  });
 }
 
 test('checks real inline links while ignoring code spans and indented fences', () => {
@@ -126,6 +129,58 @@ test('checks angle-bracket relative link destinations without the delimiters', (
   assert.throws(
     () => buildCandidate(guide('[missing](<missing.md>)')),
     /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/,
+  );
+});
+
+const inlineLinkCases = [
+  {
+    feature: 'whitespace around the destination',
+    link: target => `[guide]( <${target}> )`,
+    target: 'guide.md',
+  },
+  {
+    feature: 'escaped apostrophes in a title',
+    link: target => `[guide](${target} 'Editor\\'s guide')`,
+    target: 'guide.md',
+  },
+  {
+    feature: 'escaped double quotes in a title',
+    link: target => `[guide](${target} "The \\"guide\\"")`,
+    target: 'guide.md',
+  },
+  {
+    feature: 'line breaks between link components',
+    link: target => `[guide](\n  <${target}>\n  "title"\n)`,
+    target: 'guide.md',
+  },
+  {
+    feature: 'balanced parentheses in the bare destination',
+    link: target => `[guide](${target})`,
+    target: 'guide(v2(draft)).md',
+    extraFiles: [file('reference/guide(v2(draft)).md', 'Versioned guide')],
+  },
+];
+for (const { feature, link, target, extraFiles } of inlineLinkCases) {
+  test(`validates present and missing inline targets with ${feature}`, () => {
+    assert.doesNotThrow(() => buildCandidate(guide(link(target), extraFiles)));
+    const missing = target.replace('guide', 'missing');
+    assert.throws(
+      () => buildCandidate(guide(link(missing), extraFiles)),
+      { message: `Missing or escaping relative support reference: reference/guide.md: ${missing}` },
+    );
+  });
+}
+
+test('distinguishes escaped syntax, code, and nested inline link labels', () => {
+  const examples = [
+    '\\[plain text](missing.md)',
+    "[one [nested] label](guide.md 'literal [example](missing.md)')",
+    '[escape punctuation](guide\\(v2\\).md#example)',
+  ].join('\n\n');
+  assert.doesNotThrow(() => buildCandidate(guide(examples, [file('reference/guide(v2).md', 'Versioned guide')])));
+  assert.throws(
+    () => buildCandidate(guide('\\`literal backtick [link](missing.md)`')),
+    { message: 'Missing or escaping relative support reference: reference/guide.md: missing.md' },
   );
 });
 
@@ -288,13 +343,39 @@ test('CLI rejects procedure changes and retained archive disagreement under the 
   assert.deepEqual(readFileSync(path.join(output, archiveName)), archive);
 });
 
+function fixtureWithManifestFields(fields) {
+  const input = fixture();
+  const manifest = input.sources.find(entry => entry.name === '.claude-plugin/plugin.json');
+  manifest.bytes = json({ ...JSON.parse(manifest.bytes), ...fields });
+  input.pin.sourceFiles.find(entry => entry.name === manifest.name).sha256 = sha256(manifest.bytes);
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  return input;
+}
+
+test('CLI allows an omitted or matching upstream license and rejects invalid values before writing', t => {
+  for (const license of [undefined, 'Apache-2.0', false, 0, '', null, 'MIT']) {
+    const input = fixtureWithManifestFields({ license });
+    const { root, run, reserve } = cliFixture(t, { input });
+    const { requestFile, reservation } = reserve();
+    const output = path.join(root, 'candidate');
+    const result = run('build', requestFile, output);
+    if (license === undefined || license === 'Apache-2.0') {
+      assert.equal(result.status, 0, result.stderr);
+      const entries = readZip(readFileSync(path.join(output, `impeccable-${reservation.version}.zip`)));
+      for (const name of ['plugin.json', '.codex-plugin/plugin.json']) {
+        assert.equal(JSON.parse(entries.find(entry => entry.name === name).bytes).license, 'Apache-2.0');
+      }
+    } else {
+      assert.equal(result.status, 1, `Accepted license ${JSON.stringify(license)}`);
+      assert.match(result.stderr, /Malformed or unsupported upstream manifest/);
+      assert.equal(existsSync(output), false);
+    }
+  }
+});
+
 test('CLI rejects present malformed manifest keywords before creating output', t => {
   for (const keywords of [false, null, 0, '', ['design', 42], { category: 'design' }]) {
-    const input = fixture();
-    const manifest = input.sources.find(entry => entry.name === '.claude-plugin/plugin.json');
-    manifest.bytes = json({ ...JSON.parse(manifest.bytes), keywords });
-    input.pin.sourceFiles.find(entry => entry.name === manifest.name).sha256 = sha256(manifest.bytes);
-    input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+    const input = fixtureWithManifestFields({ keywords });
     const { root, run, reserve } = cliFixture(t, { input });
     const { requestFile } = reserve();
     const output = path.join(root, 'rejected');

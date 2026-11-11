@@ -46,12 +46,13 @@ export function selectRelease(listing) {
   if (listing?.complete !== true || !Array.isArray(listing.releases)) throw new Error('A complete release enumeration is required.');
   const releases = [];
   for (const release of listing.releases) {
+    if (release?.draft === true || release?.prerelease === true) continue;
     const tag = release?.tag_name;
-    if (typeof tag !== 'string' || !tag.startsWith('skill-v')) continue;
+    if (typeof tag !== 'string' || !tag.trim()) throw new Error('Cannot classify upstream release without a tag name.');
+    if (!tag.startsWith('skill-v')) continue;
     const version = tag.slice(7);
     const match = version.match(VERSION);
     if (!match || match[0] !== version) continue;
-    if (release.draft === true || release.prerelease === true) continue;
     if (release.draft !== false || release.prerelease !== false) {
       throw new Error(`Cannot determine eligibility for upstream release: ${tag}`);
     }

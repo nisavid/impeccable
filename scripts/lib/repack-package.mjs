@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readZip, writeZip, safePath } from './repack-zip.mjs';
 import { signaturePayload } from '../sign-bundle.mjs';
 import { allocateVersion } from './repack-version.mjs';
+import { inlineLinkDestinations } from './repack-markdown.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export const jsonBytes = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
@@ -76,45 +77,21 @@ function transformHooks(hooks, projectSkillPath) {
   return visit(hooks);
 }
 
-function markdownWithoutCode(text) {
-  let fence;
-  const prose = text.split(/\r?\n/).map(line => {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (fence) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
-      return '';
-    }
-    if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
-      fence = marker[1];
-      return '';
-    }
-    return line;
-  }).join('\n');
-
-  // A code span closes on a backtick run of the same length as its opener.
-  return prose.split(/\n[ \t]*\n/).map(paragraph =>
-    paragraph.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ' ')
-  );
-}
-
 function validateSupportLinks(skill, files) {
-  const inlineLink = /\[[^\]]*\]\((?:<(?<delimited>[^<>\r\n]*)>|(?<bare>[^\s<>)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
   for (const file of skill.filter(file => file.name.endsWith('.md'))) {
-    for (const prose of markdownWithoutCode(file.bytes.toString('utf8'))) {
-      for (const { groups } of prose.matchAll(inlineLink)) {
-        const target = (groups.delimited ?? groups.bare).split('#')[0];
-        if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes('{{')) continue;
-        let decoded;
-        try {
-          decoded = decodeURIComponent(target);
-        } catch {
-          fail(`Invalid percent encoding in relative support reference: ${file.name}: ${target}`);
-        }
-        const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), decoded));
-        const directory = resolved.replace(/\/$/, '');
-        if (resolved.startsWith('../') || resolved.startsWith('/') || !(files.has(resolved) || skill.some(entry => entry.name.startsWith(`${directory}/`)))) {
-          fail(`Missing or escaping relative support reference: ${file.name}: ${target}`);
-        }
+    for (const destination of inlineLinkDestinations(file.bytes.toString('utf8'))) {
+      const target = destination.split('#')[0];
+      if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes('{{')) continue;
+      let decoded;
+      try {
+        decoded = decodeURIComponent(target);
+      } catch {
+        fail(`Invalid percent encoding in relative support reference: ${file.name}: ${target}`);
+      }
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), decoded));
+      const directory = resolved.replace(/\/$/, '');
+      if (resolved.startsWith('../') || resolved.startsWith('/') || !(files.has(resolved) || skill.some(entry => entry.name.startsWith(`${directory}/`)))) {
+        fail(`Missing or escaping relative support reference: ${file.name}: ${target}`);
       }
     }
   }
@@ -156,9 +133,10 @@ export function buildCandidate(input) {
   same(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'Stop'], 'Unsupported hook events.');
   const manifest = JSON.parse(checkedFile(sourceMap, '.claude-plugin/plugin.json').bytes);
   const allowed = ['name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills'];
+  const invalidLicense = Object.hasOwn(manifest, 'license') && manifest.license !== policy.license;
   const invalidKeywords = Object.hasOwn(manifest, 'keywords') &&
     (!Array.isArray(manifest.keywords) || manifest.keywords.some(value => typeof value !== 'string'));
-  if (Object.keys(manifest).some(key => !allowed.includes(key)) || manifest.name !== 'impeccable' || manifest.version !== pin.version || typeof manifest.description !== 'string' || !manifest.description || typeof manifest.author?.name !== 'string' || Object.entries(manifest.author).some(([key, value]) => !['name', 'email', 'url'].includes(key) || typeof value !== 'string') || typeof manifest.homepage !== 'string' || !manifest.homepage.startsWith('https://') || manifest.repository !== 'https://github.com/pbakaus/impeccable' || (manifest.license && manifest.license !== policy.license) || invalidKeywords) fail('Malformed or unsupported upstream manifest.');
+  if (Object.keys(manifest).some(key => !allowed.includes(key)) || manifest.name !== 'impeccable' || manifest.version !== pin.version || typeof manifest.description !== 'string' || !manifest.description || typeof manifest.author?.name !== 'string' || Object.entries(manifest.author).some(([key, value]) => !['name', 'email', 'url'].includes(key) || typeof value !== 'string') || typeof manifest.homepage !== 'string' || !manifest.homepage.startsWith('https://') || manifest.repository !== 'https://github.com/pbakaus/impeccable' || invalidLicense || invalidKeywords) fail('Malformed or unsupported upstream manifest.');
   const metadata = Object.fromEntries(['name', 'description', 'author', 'homepage', 'keywords'].filter(key => key in manifest).map(key => [key, manifest[key]]));
   metadata.version = version;
   metadata.repository = 'https://github.com/nisavid/impeccable';
@@ -179,5 +157,5 @@ export function buildCandidate(input) {
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
   const bytes = writeZip(payload);
   const catalog = { name: 'impeccable', interface: { displayName: 'Impeccable' }, plugins: [{ name: 'impeccable', source: { source: 'local', path: './plugins/impeccable' }, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }, category: 'Creativity' }] };
-  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation covers bare and angle-bracket destinations with optional single- or double-quoted titles outside code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
+  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation checks inline angle-bracket destinations and bare destinations with balanced parentheses. It allows surrounding whitespace and optional quoted titles and skips code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
 }

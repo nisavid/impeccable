@@ -49,6 +49,20 @@ test('stops selection when a higher canonical skill release has unknown eligibil
   }
 });
 
+test('rejects release rows without a classifiable tag unless explicitly excluded', () => {
+  const eligible = { tag_name: 'skill-v4.8.0', draft: false, prerelease: false };
+  const listing = release => ({ complete: true, releases: [eligible, release] });
+  for (const tag_name of [undefined, null, '', '   ', 4, ['skill-v4.9.0']]) {
+    assert.throws(
+      () => selectRelease(listing({ tag_name, draft: false, prerelease: false })),
+      /Cannot classify upstream release without a tag name/,
+    );
+    assert.equal(selectRelease(listing({ tag_name, draft: true })), eligible);
+    assert.equal(selectRelease(listing({ tag_name, prerelease: true })), eligible);
+  }
+  assert.throws(() => selectRelease(listing(null)), /Cannot classify upstream release without a tag name/);
+});
+
 test('excludes noncanonical tags and rejects out-of-range stable tags before sorting', () => {
   const stable = tag_name => ({ tag_name, draft: false, prerelease: false });
   const valid = stable('skill-v4.8.0');
