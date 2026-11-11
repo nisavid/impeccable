@@ -6,7 +6,7 @@ import { writeZip, readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { sha256 } from '../scripts/repack.mjs';
 import { writeCandidate, validateCandidate } from '../scripts/repack.mjs';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 const file = (name, content, mode = 0o644) => ({ name, bytes: Buffer.isBuffer(content) ? content : Buffer.from(content), mode });
-function fixture() {
+function fixture(changeSkill = () => {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n')];
   const windows = 'cmd /c if exist ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
@@ -24,6 +24,7 @@ function fixture() {
   hooks.hooks.PostToolUse[0].hooks[0].commandWindows = nativeWindows;
   hooks.hooks.Stop[0].hooks[0].commandWindows = nativeWindows;
   const manifest = { name: 'impeccable', version: '4.8.0', description: 'Design', author: { name: 'Upstream author' }, homepage: 'https://impeccable.style', repository: 'https://github.com/pbakaus/impeccable', skills: './.claude/skills/' };
+  changeSkill(skills);
   const universal = writeZip([...skills.map(f => ({ ...f, name: `.codex/skills/impeccable/${f.name}` })), file('.codex/hooks.json', json(projectHooks))]);
   const signature = json(signBundle(universal, '4.8.0', privateKey, { enrolled: publicKeyHex(publicKey) }));
   const sources = [file('LICENSE', 'Apache fixture\n'), file('NOTICE.md', 'Attribution fixture\n'), file('.claude-plugin/plugin.json', json(manifest)), file('scripts/lib/assets/plugin-icon.png', 'icon')];
@@ -63,7 +64,7 @@ test('rejects corrupt assets, changed input bindings, changed trust and unsuppor
   assert.throws(mutate(input => { input.universal[40] ^= 1; }), /digest/);
   assert.throws(mutate(input => { input.pin.tag = 'skill-v4.8.1'; }), /tag/);
   assert.throws(mutate(input => { input.pin.assets[0].sha256 = '0'.repeat(64); }), /digest/);
-  assert.throws(mutate(input => { input.policy.publicKey = '0'.repeat(64); }), /signature/);
+  assert.throws(mutate(input => { input.policy.publicKey = publicKeyHex(generateKeyPairSync('ed25519').publicKey); }), /signature/);
   assert.throws(mutate(input => { input.policy.licenseFiles[0].sha256 = '0'.repeat(64); }), /license/);
   assert.throws(mutate(input => { input.version = '4.8.1'; }), /Reservation/);
   assert.throws(mutate(input => {
@@ -88,9 +89,48 @@ test('requires complete signed support tree and reviewed hook and runtime enroll
   assert.throws(() => buildCandidate(runtime), /executable inventory/);
 });
 
-test('validates promoted bytes, rejects mismatched package versions, and preserves existing candidate output', () => {
+test('rejects runtime inventory changes, new literal origins and nested skills', () => {
+  assert.throws(() => buildCandidate(fixture(files => files.push(file('scripts/extra.js', '')))), /runtime-file inventory changed/);
+  assert.throws(() => buildCandidate(fixture(files => {
+    files.find(entry => entry.name === 'scripts/impeccable').bytes = Buffer.from('# https://new.example\n');
+  })), /literal runtime origins changed/);
+  assert.throws(() => buildCandidate(fixture(files => files.push(file('reference/SKILL.md', '')))), /Unexpected nested skill/);
+});
+
+function guide(content) {
+  return fixture(files => { files.find(entry => entry.name === 'reference/guide.md').bytes = Buffer.from(content); });
+}
+
+test('checks real inline links while ignoring code spans and indented fences', () => {
+  const examples = [
+    '`[inline](missing.md)`',
+    '``Use `[nested](missing.md)` here``',
+    '  ```md\n[fenced](missing.md)\n  ```',
+    '   ~~~~md\n[tilde fence](missing.md)\n   ~~~~',
+    'Read [`skill`](../SKILL.md).',
+  ].join('\n\n');
+  assert.doesNotThrow(() => buildCandidate(guide(examples)));
+  assert.throws(() => buildCandidate(guide(examples + '\n\n[real](missing.md)')), /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/);
+});
+
+test('identifies the referring file and target when an inline link has invalid encoding', () => {
+  assert.throws(() => buildCandidate(guide('[invalid](bad%ZZ.md)')), /Invalid percent encoding in relative support reference: reference\/guide\.md: bad%ZZ\.md/);
+});
+
+test('requires impeccable identity in the opening skill frontmatter', () => {
+  for (const frontmatter of ['name: renamed\n', '']) {
+    const input = fixture(files => {
+      files.find(entry => entry.name === 'SKILL.md').bytes = Buffer.from(`---\n${frontmatter}---\nname: impeccable\n---\n`);
+    });
+    assert.throws(() => buildCandidate(input), /Unexpected upstream skill identity/);
+  }
+});
+
+test('validates retained bytes, rejects mismatched package versions, and preserves existing candidate output', t => {
   const input = fixture();
-  const directory = path.join(mkdtempSync(path.join(tmpdir(), 'impeccable-package-')), 'candidate');
+  const root = mkdtempSync(path.join(tmpdir(), 'impeccable-package-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'candidate');
   const candidate = writeCandidate(input, directory);
   assert.equal(validateCandidate(input, directory).archive.sha256, candidate.archive.sha256);
   const archive = readFileSync(path.join(directory, candidate.archive.name));
@@ -115,38 +155,181 @@ test('public provenance retains exposure versions and hashes without private acc
   assert.match(provenance, /4\.8\.0/);
 });
 
-test('CLI reserves, builds twice in independent processes, and validates without changing qualified files', () => {
-  const input = fixture();
+function cliFixture(t, { input = fixture(), umask = 0o022 } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'impeccable-repack-cli-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const put = (name, bytes) => {
     const filename = path.join(root, name);
     mkdirSync(path.dirname(filename), { recursive: true });
     writeFileSync(filename, bytes);
     return filename;
   };
-  put('universal.zip', input.universal); put('signature.json', input.signature);
-  put('pin.json', json(input.pin)); put('policy.json', json(input.policy));
-  for (const file of input.sources) put(`source/${file.name}`, file.bytes);
-  const reserve = put('reserve.json', json({ upstream: '4.8.0', inventory: { complete: true, records: [{ version: '4.8.0' }] }, binding: input.reservation.binding, directory: path.join(root, 'reservations') }));
+  const withUmask = action => {
+    const previous = process.umask(umask);
+    try {
+      return action();
+    } finally {
+      process.umask(previous);
+    }
+  };
+  withUmask(() => {
+    put('universal.zip', input.universal);
+    put('signature.json', input.signature);
+    put('pin.json', json(input.pin));
+    put('policy.json', json(input.policy));
+    for (const file of input.sources) put(`source/${file.name}`, file.bytes);
+  });
+
   const command = fileURLToPath(new URL('../scripts/repack.mjs', import.meta.url));
-  const run = (...args) => spawnSync(process.execPath, [command, ...args], { encoding: 'utf8' });
-  const reserved = run('reserve', reserve);
-  assert.equal(reserved.status, 0, reserved.stderr);
-  assert.equal(JSON.parse(reserved.stdout).reservation.version, '4.8.1+from.4.8.0');
-  const request = put('build.json', json({ universal: 'universal.zip', signature: 'signature.json', pin: 'pin.json', policy: 'policy.json', reservation: 'reservations/repack-v4.8.1+from.4.8.0.json', sourceRoot: 'source' }));
-  for (const directory of ['first', 'second']) {
-    const result = run('build', request, path.join(root, directory));
+  const run = (...args) => withUmask(() => spawnSync(process.execPath, [command, ...args], { encoding: 'utf8' }));
+  const directory = path.join(root, 'reservations');
+  function reserve({ records = [], advance = false } = {}) {
+    const request = { upstream: input.pin.version, inventory: { complete: true, records }, binding: input.reservation.binding, directory, advance };
+    const result = run('reserve', put('reserve.json', json(request)));
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).outcome, 'candidate');
+    const { reservation } = JSON.parse(result.stdout);
+    const buildRequest = {
+      universal: 'universal.zip', signature: 'signature.json', pin: 'pin.json', policy: 'policy.json',
+      reservation: `reservations/repack-v${reservation.version}.json`, sourceRoot: 'source',
+      procedureRevision: input.procedureRevision,
+    };
+    return { reservation, buildRequest, requestFile: put('build.json', json(buildRequest)) };
   }
-  const archive = 'impeccable-4.8.1+from.4.8.0.zip';
-  assert.deepEqual(readFileSync(path.join(root, 'first', archive)), readFileSync(path.join(root, 'second', archive)));
-  assert.equal(run('validate', request, path.join(root, 'first')).status, 0);
-  assert.equal(run('build', request, path.join(root, 'first')).status, 1);
+  return { input, root, directory, put, run, reserve };
+}
+
+for (const { label, options, umask, version } of [
+  { label: 'matching upstream version', options: {}, umask: 0o022, version: '4.8.0' },
+  { label: 'explicit patch advance', options: { advance: true }, umask: 0o002, version: '4.8.1+from.4.8.0' },
+  { label: 'patch advance after exposure', options: { records: [{ version: '4.8.0' }] }, umask: 0o022, version: '4.8.1+from.4.8.0' },
+]) {
+  test(`CLI reserves ${label} and repeats the build under umask ${umask.toString(8)}`, t => {
+    const { root, reserve, run } = cliFixture(t, { umask });
+    assert.equal(statSync(path.join(root, 'source/LICENSE')).mode & 0o777, 0o666 & ~umask);
+    const { reservation, requestFile } = reserve(options);
+    assert.equal(reservation.version, version);
+    assert.equal(reservation.advance, options.advance ?? false);
+    for (const directory of ['first', 'second']) {
+      const result = run('build', requestFile, path.join(root, directory));
+      assert.equal(result.status, 0, result.stderr);
+      const { outcome, candidate } = JSON.parse(result.stdout);
+      assert.equal(outcome, 'candidate');
+      assert.equal(candidate.version, version);
+      assert.match(candidate.limits.join(' '), /caller verifies the executing procedure/i);
+    }
+    for (const name of [`impeccable-${version}.zip`, 'candidate.json']) {
+      assert.deepEqual(readFileSync(path.join(root, 'first', name)), readFileSync(path.join(root, 'second', name)));
+    }
+    const validated = run('validate', requestFile, path.join(root, 'first'));
+    assert.equal(validated.status, 0, validated.stderr);
+    assert.equal(JSON.parse(validated.stdout).outcome, 'validated');
+  });
+}
+
+test('CLI preview and usage do not create reservations', t => {
+  const { directory, put, run } = cliFixture(t);
+  const requestFile = put('allocate.json', json({ upstream: '4.8.0', inventory: { complete: true, records: [] }, directory }));
+  const preview = run('allocate', requestFile);
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.deepEqual(JSON.parse(preview.stdout), { outcome: 'allocated-preview', version: '4.8.0' });
+  const usage = run('allocate', requestFile, 'unexpected');
+  assert.equal(usage.status, 2);
+  assert.match(usage.stderr, /^Usage:/);
+  assert.equal(existsSync(directory), false);
+});
+
+test('CLI rejects procedure changes and retained archive disagreement under the same reservation', t => {
+  const { root, put, run, reserve } = cliFixture(t);
+  const { buildRequest, requestFile, reservation } = reserve();
+  const output = path.join(root, 'retained');
+  const built = run('build', requestFile, output);
+  assert.equal(built.status, 0, built.stderr);
+  assert.equal(run('build', requestFile, output).status, 1);
+  for (const procedureRevision of [undefined, 'd'.repeat(40)]) {
+    const different = put('different.json', json({ ...buildRequest, procedureRevision }));
+    for (const [verb, destination] of [['build', path.join(root, 'retry')], ['validate', output]]) {
+      const mismatch = run(verb, different, destination);
+      assert.equal(mismatch.status, 1);
+      assert.match(mismatch.stderr, /Procedure revision.*reservation/);
+    }
+    assert.equal(existsSync(path.join(root, 'retry')), false);
+  }
+  const archiveName = `impeccable-${reservation.version}.zip`;
+  const archive = readFileSync(path.join(output, archiveName));
+  put(`retained/${archiveName}`, 'different bytes');
+  const invalid = run('validate', requestFile, output);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Candidate bytes or mode mismatch: impeccable-4\.8\.0\.zip/);
+  assert.equal(readFileSync(path.join(output, archiveName), 'utf8'), 'different bytes');
+
+  put(`retained/${archiveName}`, archive);
   put('universal.zip', 'corrupt');
-  const failure = run('build', request, path.join(root, 'failed'));
+  const retry = path.join(root, 'retry');
+  const corrupt = run('build', requestFile, retry);
+  assert.equal(corrupt.status, 1);
+  assert.match(corrupt.stderr, /Pinned asset digest or size mismatch: universal\.zip/);
+  assert.equal(existsSync(retry), false);
+  assert.deepEqual(readFileSync(path.join(output, archiveName)), archive);
+});
+
+test('CLI rejects malformed signature JSON whose bytes match the pin', t => {
+  const input = fixture();
+  input.signature = Buffer.from('{');
+  Object.assign(input.pin.assets[1], { size: input.signature.length, sha256: sha256(input.signature) });
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  const { root, run, reserve } = cliFixture(t, { input });
+  const { requestFile } = reserve();
+  const output = path.join(root, 'failed');
+  const failure = run('build', requestFile, output);
   assert.equal(failure.status, 1);
-  assert.match(failure.stderr, /digest or size mismatch/);
-  assert.equal(existsSync(path.join(root, 'failed')), false);
-  assert.deepEqual(readFileSync(path.join(root, 'first', archive)), readFileSync(path.join(root, 'second', archive)));
+  assert.match(failure.stderr, /Malformed upstream signature JSON/);
+  assert.equal(existsSync(output), false);
+});
+
+test('CLI rejects missing, executable, or symlinked supplemental source files', t => {
+  const { root, put, run, reserve } = cliFixture(t);
+  const { requestFile } = reserve();
+  const filename = path.join(root, 'source/NOTICE.md');
+  const bytes = readFileSync(filename);
+  const output = path.join(root, 'failed');
+  function rejects(error) {
+    const failed = run('build', requestFile, output);
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, error);
+    assert.equal(existsSync(output), false);
+  }
+  unlinkSync(filename);
+  rejects(/Missing pinned supplemental source: NOTICE\.md/);
+  put('source/NOTICE.md', bytes);
+  chmodSync(filename, 0o755);
+  rejects(/Source-file hash or mode mismatch: NOTICE\.md/);
+  unlinkSync(filename);
+  symlinkSync(put('notice-target', bytes), filename);
+  rejects(/Supplemental source links are unsupported/);
+  unlinkSync(filename);
+  put('source/NOTICE.md', bytes);
+  symlinkSync(path.join(root, 'source'), path.join(root, 'linked-source'), 'dir');
+  const linked = put('linked.json', json({ ...JSON.parse(readFileSync(requestFile)), sourceRoot: 'linked-source' }));
+  const failed = run('build', linked, output);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /Supplemental source root must be a directory/);
+  assert.equal(existsSync(output), false);
+});
+
+test('validation rejects extra files, links within output, and a linked output root', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'impeccable-validate-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = fixture();
+  const output = path.join(root, 'retained');
+  writeCandidate(input, output);
+  const extra = path.join(output, 'extra.txt');
+  writeFileSync(extra, 'unexpected');
+  assert.throws(() => validateCandidate(input, output), /Candidate output inventory mismatch/);
+  unlinkSync(extra);
+  symlinkSync(path.join(output, 'candidate.json'), extra);
+  assert.throws(() => validateCandidate(input, output), /Candidate contains links or special files/);
+  unlinkSync(extra);
+  const link = path.join(root, 'link');
+  symlinkSync(output, link, 'dir');
+  assert.throws(() => validateCandidate(input, link), /Candidate output must be a directory/);
 });

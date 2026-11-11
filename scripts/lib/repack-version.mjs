@@ -3,7 +3,7 @@ const REPACK_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+from\.(0|[
 
 function numeric(version, pattern = VERSION) {
   const match = typeof version === 'string' && version.match(pattern);
-  if (!match) throw new Error(`Invalid stable version: ${version}`);
+  if (!match || match[0] !== version) throw new Error(`Invalid stable version: ${version}`);
   const parts = match.slice(1).filter(value => value !== undefined).map(Number);
   if (parts.some(value => !Number.isSafeInteger(value))) throw new Error('Version exceeds safe integer range.');
   if (parts.length === 6 && (parts[0] !== parts[3] || parts[1] !== parts[4] || parts[2] <= parts[5])) throw new Error('Invalid upstream provenance in exposed version.');
@@ -40,9 +40,16 @@ export function allocateVersion(upstream, inventory, { advance = false } = {}) {
 
 export function selectRelease(listing) {
   if (listing?.complete !== true || !Array.isArray(listing.releases)) throw new Error('A complete release enumeration is required.');
-  const releases = listing.releases.filter(release => release.draft === false && release.prerelease === false && /^skill-v\d+\.\d+\.\d+$/.test(release.tag_name));
-  releases.sort((a, b) => compare(numeric(b.tag_name.slice(7)), numeric(a.tag_name.slice(7))));
+  const releases = [];
+  for (const release of listing.releases) {
+    if (release?.draft !== false || release.prerelease !== false || typeof release.tag_name !== 'string' || !release.tag_name.startsWith('skill-v')) continue;
+    const version = release.tag_name.slice(7);
+    const match = version.match(VERSION);
+    if (!match || match[0] !== version) continue;
+    releases.push({ release, parts: numeric(version) });
+  }
+  releases.sort((a, b) => compare(b.parts, a.parts));
   if (!releases.length) throw new Error('No stable skill release found.');
-  if (releases.length > 1 && releases[0].tag_name === releases[1].tag_name) throw new Error('Duplicate upstream release identity.');
-  return releases[0];
+  if (releases.length > 1 && compare(releases[0].parts, releases[1].parts) === 0) throw new Error('Duplicate upstream release identity.');
+  return releases[0].release;
 }

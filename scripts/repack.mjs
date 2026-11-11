@@ -14,20 +14,39 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
   if (!/^[0-9a-f]{40}$/.test(binding?.procedureRevision) || !/^[0-9a-f]{64}$/.test(binding?.inputsSha256)) throw new Error('Reservation needs immutable procedure and input identities.');
   mkdirSync(directory, { recursive: true });
   const lock = path.join(directory, '.allocation-lock');
-  try { mkdirSync(lock); } catch { throw new Error('Allocation lock unavailable; reconcile concurrent or interrupted allocation.'); }
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    throw new Error('Allocation lock unavailable; reconcile concurrent or interrupted allocation.', { cause: error });
+  }
+  let written;
+  let reservation;
+  let failure;
   try {
     const local = readdirSync(directory).filter(name => name.startsWith('repack-v')).map(name => {
       const bytes = readFileSync(path.join(directory, name));
       const record = JSON.parse(bytes);
       if (name !== `repack-v${record.version}.json`) throw new Error('Reservation filename and version disagree.');
-      return { version: record.version, status: 'reserved', reservationSha256: sha256(bytes) };
+      return { version: record.version, status: 'reserved', inputsSha256: record.binding?.inputsSha256, reservationSha256: sha256(bytes) };
     });
     const exposureInventory = { ...inventory, records: [...(inventory?.records ?? []), ...local] };
     const version = allocateVersion(upstream, exposureInventory, { advance });
-    const reservation = { schema: 1, version, upstream, binding, advance, exposureInventory, exposureInventorySha256: sha256(jsonBytes(exposureInventory)) };
-    writeFileSync(path.join(directory, `repack-v${version}.json`), `${JSON.stringify(reservation, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
-    return reservation;
-  } finally { rmdirSync(lock); }
+    reservation = { schema: 1, version, upstream, binding, advance, exposureInventory, exposureInventorySha256: sha256(jsonBytes(exposureInventory)) };
+    const filename = path.join(directory, `repack-v${version}.json`);
+    writeFileSync(filename, jsonBytes(reservation), { flag: 'wx', mode: 0o644 });
+    written = filename;
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    rmdirSync(lock);
+  } catch (error) {
+    failure ??= new Error('Reservation was written; reconcile it before retrying allocation.', { cause: error });
+    failure.lockCleanup = { lock, code: error.code, error: error.message, ...(written && { reservation: written }) };
+  }
+  if (failure) throw failure;
+  return reservation;
 }
 
 const readJson = filename => JSON.parse(readFileSync(filename, 'utf8'));
@@ -38,19 +57,27 @@ export function loadBuildRequest(filename) {
   const policy = readJson(resolve(request.policy));
   const reservation = readJson(resolve(request.reservation));
   if (reservation.schema !== 1 || reservation.upstream !== pin.version || reservation.binding?.inputsSha256 !== sha256(jsonBytes({ pin, policy })) || !/^[0-9a-f]{64}$/.test(reservation.exposureInventorySha256)) throw new Error('Reservation does not bind these pinned inputs and enrolled policy.');
+  const { procedureRevision } = request;
+  if (typeof procedureRevision !== 'string' || procedureRevision.length !== 40 || !/^[0-9a-f]+$/.test(procedureRevision) || reservation.binding.procedureRevision !== procedureRevision) {
+    throw new Error('Procedure revision must be supplied and match the reservation.');
+  }
   const sourceRoot = resolve(request.sourceRoot);
+  if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
   const sources = pin.sourceFiles.map(expected => {
     safePath(expected.sourcePath);
     let current = sourceRoot;
+    let info;
     for (const part of expected.sourcePath.split('/')) {
       current = path.join(current, part);
-      if (lstatSync(current).isSymbolicLink()) throw new Error('Supplemental source links are unsupported.');
+      info = lstatSync(current, { throwIfNoEntry: false });
+      if (!info) throw new Error(`Missing pinned supplemental source: ${expected.sourcePath}`);
+      if (info.isSymbolicLink()) throw new Error('Supplemental source links are unsupported.');
     }
-    const info = lstatSync(current);
     if (!info.isFile()) throw new Error('Supplemental source must be a regular file.');
-    return { name: expected.name, bytes: readFileSync(current), mode: info.mode & 0o777 };
+    const mode = info.mode & 0o100 ? 0o755 : 0o644;
+    return { name: expected.name, bytes: readFileSync(current), mode };
   });
-  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, reservation, version: reservation.version, procedureRevision: reservation.binding.procedureRevision };
+  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, reservation, version: reservation.version, procedureRevision };
 }
 
 function outputFiles(result) {
@@ -121,7 +148,7 @@ async function main() {
     }
     console.log(JSON.stringify(result));
   } catch (error) {
-    console.error(JSON.stringify({ outcome: 'failed', error: error.message }));
+    console.error(JSON.stringify({ outcome: 'failed', error: error.message, lockCleanup: error.lockCleanup }));
     process.exitCode = 1;
   }
 }

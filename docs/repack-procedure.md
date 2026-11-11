@@ -4,7 +4,7 @@
 
 ## Collect immutable inputs
 
-Enumerate every upstream release page, retaining the response identities and pagination evidence. Pass `select` a JSON object with `complete: true` and the complete `releases` array. The selector chooses the numerically highest published stable `skill-vMAJOR.MINOR.PATCH`, excluding drafts, prereleases, and other components. `complete` is an explicit assertion by the collecting procedure; the offline selector cannot establish it.
+Enumerate every upstream release page, retaining the response identities and pagination evidence. Pass `select` a JSON object with `complete: true` and the complete `releases` array. The selector chooses the numerically highest published stable `skill-vMAJOR.MINOR.PATCH` with canonical decimal components. It excludes drafts, prereleases, other components, and noncanonical tags. A canonical stable skill tag outside the safe integer range stops selection. `complete` is an explicit assertion by the collecting procedure; the offline selector cannot establish it.
 
 ```sh
 node scripts/repack.mjs select releases.json
@@ -42,7 +42,7 @@ The archive's Ed25519 signature authenticates its version, artifact name, size, 
 }
 ```
 
-The IDs and sizes above illustrate the shape, not release inputs. Unix mode `420` is decimal `0644`.
+The IDs and sizes illustrate the shape. Unix mode `420` is the decimal value of octal `0644`. For regular supplemental files, the loader maps the owner execute bit to the Git mode, so a checkout umask can change read and write permissions without changing the comparison.
 
 ## Enroll the supported upstream surface
 
@@ -72,19 +72,21 @@ Collect the complete exposure inventory, including candidate tags, public releas
 
 All release paths use this allocator. The equal-version and advanced-patch branches implement [ADR 0001](adr/0001-repack-identity-and-versioning.md), together with the pinned [Real Skills allocation procedure](https://github.com/nisavid/real-skills/blob/0c1ebe0a778a861dbfee9bb2f84dec7c9ad1cf6a/docs/agents/release-archives.md). `advance: true` selects an advanced patch even when matching upstream would otherwise be eligible. An older upstream major/minor line requires a decision rather than silently creating a version below prior exposure.
 
-Create a reservation request with `upstream`, `inventory`, optional `advance`, `directory`, and `binding`. `binding.procedureRevision` is the reviewed full Git SHA. `binding.inputsSha256` hashes the UTF-8 bytes of `JSON.stringify({pin, policy}, null, 2) + "\n"`. The caller must verify that the executing procedure matches that reviewed revision. `directory` is resolved from the command's working directory.
+Create a reservation request with `upstream`, `inventory`, optional `advance`, `directory`, and `binding`. `binding.procedureRevision` is the reviewed full Git SHA. `binding.inputsSha256` hashes the UTF-8 bytes of `JSON.stringify({pin, policy}, null, 2) + "\n"`. Verify the executing procedure against that reviewed revision before reserving. Retain the execution revision and the evidence tying the invoked files to it. Resolve `directory` from the command's working directory.
 
 ```sh
 node scripts/repack.mjs reserve reservation-request.json
 ```
 
-The command acquires `.allocation-lock`, incorporates every existing `repack-v*.json` record in that directory, and writes a create-only `repack-v<version>.json` reservation. It retains the full exposure snapshot and its hash. Keep that record private when its evidence includes account details. Public `RELEASE.json` retains the exposed version list and the inventory and reservation hashes, leaving account records out. A lock left by interruption requires reconciliation; automatic stale-lock takeover is unsupported. `allocate` takes `{upstream, inventory, advance?}` and produces only a preview, never a reservation.
+The command acquires `.allocation-lock`, incorporates every existing `repack-v*.json` record in that directory, and writes a create-only `repack-v<version>.json` reservation. It retains the full exposure snapshot and its hash. Keep that record private when its evidence includes account details. Public `RELEASE.json` retains the exposed version list and the inventory and reservation hashes, leaving account records out. A lock left by interruption requires reconciliation. On cleanup failure, the command reports the primary error and `lockCleanup`, which includes the reservation path if the write completed. Confirm the lock owner has stopped, inspect and retain the reservation file if present, and verify its version and binding against the intended request. Resume with the reconciled reservation after resolving the lock. `allocate` takes `{upstream, inventory, advance?}` and produces only a preview, never a reservation.
 
 The local lock serializes users of the same directory. Hosted release attempts must additionally serialize their entire reconcile/reserve/publish sequence and establish the create-only immutable remote candidate tag before any consumer exposure. Synchronize all durable reservation records into the local directory before allocation. A local reservation alone establishes neither remote uniqueness nor exposure-inventory completeness. Retain failed reservations permanently.
 
 ## Build twice and validate
 
-Create `build-request.json` containing paths `universal`, `signature`, `pin`, `policy`, `reservation`, and `sourceRoot`. Paths resolve relative to that request file. `sourceRoot` contains only the selected supplemental source files at their original paths. The reservation must bind the same inputs, procedure, upstream baseline, and allocated version.
+Create `build-request.json` with `procedureRevision` and paths `universal`, `signature`, `pin`, `policy`, `reservation`, and `sourceRoot`. Paths resolve relative to the request file. Stage the selected supplemental files at their original paths under `sourceRoot`. The loader reads the pin-listed paths and requires a directory root and regular files without symbolic links beneath it.
+
+Set `procedureRevision` from the verified execution revision, using the retained checkout and file evidence. Check it again before building or resuming. The CLI compares this supplied revision with the reservation and verifies the bound inputs, upstream baseline, and allocation. The release path owns verification of the files it actually invokes.
 
 ```sh
 node scripts/repack.mjs build build-request.json first
@@ -99,12 +101,12 @@ Each build requires a new output directory and writes:
 - `marketplace/.agents/plugins/marketplace.json`
 - `marketplace/plugins/impeccable/`, byte- and mode-identical to the portable package
 
-Compare both archives and both `candidate.json` files byte for byte across the independent processes. Retain the inputs, enrolled policy, reservation, source comparison, procedure revision, output hashes, and both results. `validate` reconstructs the expected result and checks all retained output paths, bytes, and modes, including the archive, manifests, provenance, catalog, and marketplace tree. It rejects extra files and links. Validation does not overwrite output or consult a moving qualified ref.
+Compare both archives and both `candidate.json` files byte for byte across the independent processes. Retain the inputs, enrolled policy, reservation, source comparison, procedure revision and its verification evidence, output hashes, and both results. On resumption, reconcile the retained bytes with the same reservation before continuing. A procedure mismatch or retained-byte disagreement stops the attempt. `validate` reconstructs the expected result and checks all retained output paths, bytes, and modes, including the archive, manifests, provenance, catalog, and marketplace tree. It rejects extra files and links. Validation does not overwrite output or consult a moving qualified ref.
 
 The ZIP reader validates central/local path agreement, CRCs, bounds, entry ownership, unique relative paths, regular Unix file types, and size limits. It rejects links, special or privileged modes, traversal, case collisions, file/directory collisions, Windows device names, split archives, encryption, and ZIP64. Stored output entries use sorted paths and fixed timestamps, avoiding compression-version differences. Input archives are limited to 256 MiB compressed and expanded, with at most 20,000 entries. An upstream shape outside these bounds requires investigation.
 
-Support checks cover required paths and inline Markdown relative links outside triple-backtick fences. They do not prove all text references, dynamic paths, external links, or client discovery. Run deterministic launcher, actual-engine, and hook fixtures separately, recording the actual engine path, version, and digest. Then complete each consumer route's observations before qualification. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
+Support checks cover required paths and inline Markdown relative links outside backtick code spans and line-leading backtick or tilde fences with up to three spaces of indentation. They do not prove all text references, dynamic paths, external links, or client discovery. Run deterministic launcher, actual-engine, and hook fixtures separately, recording the actual engine path, version, and digest. Then complete each consumer route's observations before qualification. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
 
 Commands return one JSON result: `selected`, `allocated-preview`, `reserved`, `candidate`, or `validated`. Successful completion exits `0`; rejected inputs and validation errors produce `outcome: "failed"` on stderr and exit `1`; command-line usage errors exit `2`. File-write failures can leave an incomplete new output directory; preserve it as failure evidence and use a new directory after reconciliation. Existing output directories are never reused by `build`.
 
-Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs` after changing the allocator, builder, ZIP reader, or this procedure. The archive-negative fixtures use Python 3's independent ZIP encoder. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.
+Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs` after changing the allocator, builder, ZIP reader, or this procedure. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.

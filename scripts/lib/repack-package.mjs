@@ -38,8 +38,13 @@ export function verifyInputs({ universal, signature, sources, pin, policy, proce
     digest(assets[0].sha256);
     if (!Buffer.isBuffer(bytes) || bytes.length !== assets[0].size || hash(bytes) !== assets[0].sha256) fail(`Pinned asset digest or size mismatch: ${name}`);
   }
-  const envelope = JSON.parse(signature);
-  if (envelope.schema !== 1 || envelope.keyId !== policy.keyId || envelope.version !== pin.version || envelope.artifact !== 'universal.zip' || envelope.size !== universal.length || envelope.sha256 !== hash(universal) || !/^[0-9a-f]{128}$/.test(envelope.signature) || !/^[0-9a-f]{64}$/.test(policy.publicKey)) fail('Upstream signature identity mismatch.');
+  let envelope;
+  try {
+    envelope = JSON.parse(signature);
+  } catch (error) {
+    throw new Error('Malformed upstream signature JSON.', { cause: error });
+  }
+  if (envelope?.schema !== 1 || envelope.keyId !== policy.keyId || envelope.version !== pin.version || envelope.artifact !== 'universal.zip' || envelope.size !== universal.length || envelope.sha256 !== hash(universal) || !/^[0-9a-f]{128}$/.test(envelope.signature) || !/^[0-9a-f]{64}$/.test(policy.publicKey)) fail('Upstream signature identity mismatch.');
   const key = createPublicKey({ format: 'der', type: 'spki', key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(policy.publicKey, 'hex')]) });
   if (!verify(null, signaturePayload(envelope), key, Buffer.from(envelope.signature, 'hex'))) fail('Upstream signature verification failed.');
   if (!Array.isArray(sources) || !Array.isArray(pin.sourceFiles) || sources.length !== pin.sourceFiles.length || new Set(sources.map(file => file.name)).size !== sources.length) fail('Source-file inventory mismatch.');
@@ -71,12 +76,57 @@ function transformHooks(hooks, projectSkillPath) {
   return visit(hooks);
 }
 
+function markdownWithoutCode(text) {
+  let fence;
+  const prose = text.split(/\r?\n/).map(line => {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+      return '';
+    }
+    if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
+      fence = marker[1];
+      return '';
+    }
+    return line;
+  }).join('\n');
+
+  // A code span closes on a backtick run of the same length as its opener.
+  return prose.split(/\n[ \t]*\n/).map(paragraph =>
+    paragraph.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ' ')
+  );
+}
+
+function validateSupportLinks(skill, files) {
+  for (const file of skill.filter(file => file.name.endsWith('.md'))) {
+    for (const prose of markdownWithoutCode(file.bytes.toString('utf8'))) {
+      for (const match of prose.matchAll(/\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g)) {
+        const target = match[1].split('#')[0];
+        if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes('{{')) continue;
+        let decoded;
+        try {
+          decoded = decodeURIComponent(target);
+        } catch {
+          fail(`Invalid percent encoding in relative support reference: ${file.name}: ${target}`);
+        }
+        const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), decoded));
+        const directory = resolved.replace(/\/$/, '');
+        if (resolved.startsWith('../') || resolved.startsWith('/') || !(files.has(resolved) || skill.some(entry => entry.name.startsWith(`${directory}/`)))) {
+          fail(`Missing or escaping relative support reference: ${file.name}: ${target}`);
+        }
+      }
+    }
+  }
+}
+
 function validateSkill(skill, policy) {
   const files = new Map(skill.map(file => [file.name, file]));
   if (![policy.requiredSkillFiles, policy.executableFiles, policy.runtimeFiles, policy.runtimeOrigins].every(Array.isArray)) fail('Complete upstream capability enrollment required.');
   for (const name of ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION', ...policy.requiredSkillFiles]) checkedFile(files, safePath(name));
-  const frontmatter = checkedFile(files, 'SKILL.md').bytes.toString('utf8');
-  if (!/^---\r?\n[\s\S]*?^name:\s*impeccable\s*$/m.test(frontmatter)) fail('Unexpected upstream skill identity.');
+  const skillText = checkedFile(files, 'SKILL.md').bytes.toString('utf8');
+  const frontmatter = /^---\r?\n([\s\S]*?)(?<=\n)---[ \t]*(?:\r?\n|$)/.exec(skillText)?.[1] ?? '';
+  const names = [...frontmatter.matchAll(/^name:[ \t]*(.*)$/gm)];
+  if (names.length !== 1 || names[0][1].trim() !== 'impeccable') fail('Unexpected upstream skill identity.');
   if (skill.some(file => file.name !== 'SKILL.md' && file.name.endsWith('/SKILL.md'))) fail('Unexpected nested skill.');
   const executables = skill.filter(file => file.mode & 0o111).map(file => file.name).sort();
   same(executables, [...policy.executableFiles].sort(), 'Upstream executable inventory changed; review capabilities.');
@@ -84,15 +134,7 @@ function validateSkill(skill, policy) {
   same(runtime.map(file => file.name).sort(), [...policy.runtimeFiles].sort(), 'Upstream runtime-file inventory changed; review capabilities.');
   const origins = [...new Set(runtime.flatMap(file => [...file.bytes.toString('utf8').matchAll(/https?:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?/g)].map(match => match[0])))].sort();
   same(origins, [...policy.runtimeOrigins].sort(), 'Upstream literal runtime origins changed; review capabilities.');
-  for (const file of skill.filter(file => file.name.endsWith('.md'))) {
-    const text = file.bytes.toString('utf8').replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
-    for (const match of text.matchAll(/\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g)) {
-      const target = match[1].split('#')[0];
-      if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes('{{')) continue;
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), decodeURIComponent(target)));
-      if (resolved.startsWith('../') || resolved.startsWith('/') || !(files.has(resolved) || skill.some(entry => entry.name.startsWith(`${resolved.replace(/\/$/, '')}/`)))) fail(`Missing or escaping relative support reference: ${file.name}: ${target}`);
-    }
-  }
+  validateSupportLinks(skill, files);
   return { executables, runtimeFiles: runtime.map(file => file.name).sort(), literalRuntimeOrigins: origins };
 }
 
@@ -134,5 +176,5 @@ export function buildCandidate(input) {
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
   const bytes = writeZip(payload);
   const catalog = { name: 'impeccable', interface: { displayName: 'Impeccable' }, plugins: [{ name: 'impeccable', source: { source: 'local', path: './plugins/impeccable' }, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }, category: 'Creativity' }] };
-  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation covers inline Markdown links outside triple-backtick fences; client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
+  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation covers inline Markdown links outside code spans and line-leading fences; client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
 }
