@@ -414,17 +414,25 @@ test('CLI preview and usage do not create reservations', t => {
 });
 
 test('CLI builds, validates, and reconciles only the exact serialized reservation', t => {
-  const { root, directory, put, run, reserve } = cliFixture(t);
+  const input = fixture();
+  const { procedureRevision, inputsSha256 } = input.reservation.binding;
+  input.reservation.binding = { inputsSha256, procedureRevision };
+  const { root, directory, put, run, reserve } = cliFixture(t, { input });
   const { buildRequest, requestFile, reservation } = reserve();
   const filename = path.join(root, buildRequest.reservation);
   const original = readFileSync(filename);
+  assert.deepEqual(Object.keys(JSON.parse(original).binding), ['inputsSha256', 'procedureRevision']);
   const reservationSha256 = sha256(original);
   const output = path.join(root, 'retained');
   const build = run('build', requestFile, output);
   assert.equal(build.status, 0, build.stderr);
   const { candidate } = JSON.parse(build.stdout);
   assert.equal(candidate.reservationSha256, reservationSha256);
-  const release = readZip(readFileSync(path.join(output, candidate.archive.name))).find(entry => entry.name === 'RELEASE.json');
+  const archivePath = path.join(output, candidate.archive.name);
+  const recordPath = path.join(output, 'candidate.json');
+  const archive = readFileSync(archivePath);
+  const candidateRecord = readFileSync(recordPath);
+  const release = readZip(archive).find(entry => entry.name === 'RELEASE.json');
   assert.equal(JSON.parse(release.bytes).reservationSha256, reservationSha256);
   const validate = run('validate', requestFile, output);
   assert.equal(validate.status, 0, validate.stderr);
@@ -441,18 +449,42 @@ test('CLI builds, validates, and reconciles only the exact serialized reservatio
   const inventory = readdirSync(directory).sort();
 
   assert.equal(original.at(-1), 0x0a);
-  const withoutFinalNewline = original.subarray(0, -1);
-  writeFileSync(filename, withoutFinalNewline);
+  const reordered = json({ version: reservation.version, ...reservation });
+  assert.deepEqual(JSON.parse(reordered), reservation);
+  assert.notDeepEqual(reordered, original);
   const retry = path.join(root, 'retry');
-  for (const args of [['build', requestFile, retry], ['validate', requestFile, output], ['reserve', reconcileFile]]) {
-    const result = run(...args);
-    assert.equal(result.status, 1, `${args[0]} accepted a rewritten reservation`);
-    assert.match(result.stderr, /Reservation must match the exact serialization emitted by reserve/);
+  for (const rewritten of [original.subarray(0, -1), reordered]) {
+    writeFileSync(filename, rewritten);
+    for (const args of [['build', requestFile, retry], ['validate', requestFile, output], ['reserve', reconcileFile]]) {
+      const result = run(...args);
+      assert.equal(result.status, 1, `${args[0]} accepted a rewritten reservation`);
+      assert.match(result.stderr, /Reservation must match the exact serialization emitted by reserve/);
+    }
+    assert.equal(existsSync(retry), false);
+    assert.deepEqual(readdirSync(directory).sort(), inventory);
+    assert.deepEqual(readFileSync(filename), rewritten);
+    assert.deepEqual(readFileSync(archivePath), archive);
+    assert.deepEqual(readFileSync(recordPath), candidateRecord);
   }
-  assert.equal(existsSync(retry), false);
+
+  // Nested field order is valid writer input, but changing it alters the retained identity.
+  const changedBinding = json({ ...reservation, binding: { procedureRevision, inputsSha256 } });
+  assert.deepEqual(JSON.parse(changedBinding), reservation);
+  writeFileSync(filename, changedBinding);
+  const changedOutput = run('validate', requestFile, output);
+  assert.equal(changedOutput.status, 1);
+  assert.match(changedOutput.stderr, /Candidate bytes or mode mismatch/);
+  const conflictingRecord = run('reserve', reconcileFile);
+  assert.equal(conflictingRecord.status, 1);
+  assert.match(conflictingRecord.stderr, /Conflicting exposed version identity/);
   assert.deepEqual(readdirSync(directory).sort(), inventory);
-  assert.deepEqual(readFileSync(filename), withoutFinalNewline);
-  assert.equal(JSON.parse(readFileSync(path.join(output, 'candidate.json'))).reservationSha256, reservationSha256);
+  assert.deepEqual(readFileSync(filename), changedBinding);
+  assert.deepEqual(readFileSync(archivePath), archive);
+  assert.deepEqual(readFileSync(recordPath), candidateRecord);
+
+  writeFileSync(filename, original);
+  const restored = run('validate', requestFile, output);
+  assert.equal(restored.status, 0, restored.stderr);
 });
 
 test('CLI rejects procedure changes and retained archive disagreement under the same reservation', t => {

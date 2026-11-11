@@ -19,10 +19,15 @@ function isReservationBinding(binding) {
     typeof binding.inputsSha256 === 'string' && /^[0-9a-f]{64}$/.test(binding.inputsSha256);
 }
 
+function reservationBytes(reservation) {
+  const { schema, version, upstream, binding, advance, exposureInventory, exposureInventorySha256 } = reservation ?? {};
+  return jsonBytes({ schema, version, upstream, binding, advance, exposureInventory, exposureInventorySha256 });
+}
+
 function readReservation(filename) {
   const bytes = readFileSync(filename);
   const reservation = JSON.parse(bytes);
-  if (!bytes.equals(jsonBytes(reservation))) {
+  if (!bytes.equals(reservationBytes(reservation))) {
     throw new Error(`Reservation must match the exact serialization emitted by reserve: ${path.basename(filename)}`);
   }
   return { reservation, bytes };
@@ -55,7 +60,7 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
     const version = allocateVersion(upstream, exposureInventory, { advance });
     reservation = { schema: 1, version, upstream, binding, advance, exposureInventory, exposureInventorySha256: sha256(jsonBytes(exposureInventory)) };
     const filename = path.join(directory, `repack-v${version}.json`);
-    writeFileSync(filename, jsonBytes(reservation), { flag: 'wx', mode: 0o644 });
+    writeFileSync(filename, reservationBytes(reservation), { flag: 'wx', mode: 0o644 });
     written = filename;
   } catch (error) {
     failure = error;
