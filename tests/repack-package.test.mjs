@@ -6,7 +6,7 @@ import { writeZip, readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { sha256 } from '../scripts/repack.mjs';
 import { writeCandidate, validateCandidate } from '../scripts/repack.mjs';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -129,15 +129,16 @@ test('skips fenced examples when the opening info string contains Unicode line s
   }
 });
 
-test('keeps marker-like body lines with Unicode line separators inside fences', () => {
+test('keeps marker-like body lines with non-ASCII whitespace inside fences', () => {
   for (const marker of ['~~~', '```']) {
-    for (const separator of ['\u2028', '\u2029']) {
+    for (const separator of ['\u2028', '\u2029', '\u00a0']) {
       const open = `${marker}md\n${marker} ${separator} `;
+      const close = `${marker} \t`;
       const missing = '\n[missing](after-fence.md)';
       const expected = { message: 'Missing or escaping relative support reference: reference/guide.md: after-fence.md' };
-      assert.throws(() => buildCandidate(guide(`${open}\n${marker}${missing}`)), expected);
+      assert.throws(() => buildCandidate(guide(`${open}\n${close}${missing}`)), expected);
 
-      const fence = `${open}\n[example](inside-fence.md)\n${marker}`;
+      const fence = `${open}\n[example](inside-fence.md)\n${close}`;
       assert.doesNotThrow(() => buildCandidate(guide(fence + '\n[present](guide.md)')));
       assert.throws(() => buildCandidate(guide(fence + missing)), expected);
     }
@@ -412,6 +413,48 @@ test('CLI preview and usage do not create reservations', t => {
   assert.equal(existsSync(directory), false);
 });
 
+test('CLI builds, validates, and reconciles only the exact serialized reservation', t => {
+  const { root, directory, put, run, reserve } = cliFixture(t);
+  const { buildRequest, requestFile, reservation } = reserve();
+  const filename = path.join(root, buildRequest.reservation);
+  const original = readFileSync(filename);
+  const reservationSha256 = sha256(original);
+  const output = path.join(root, 'retained');
+  const build = run('build', requestFile, output);
+  assert.equal(build.status, 0, build.stderr);
+  const { candidate } = JSON.parse(build.stdout);
+  assert.equal(candidate.reservationSha256, reservationSha256);
+  const release = readZip(readFileSync(path.join(output, candidate.archive.name))).find(entry => entry.name === 'RELEASE.json');
+  assert.equal(JSON.parse(release.bytes).reservationSha256, reservationSha256);
+  const validate = run('validate', requestFile, output);
+  assert.equal(validate.status, 0, validate.stderr);
+  assert.equal(JSON.parse(validate.stdout).candidate.reservationSha256, reservationSha256);
+
+  const records = [{ version: reservation.version, reservationSha256, inputsSha256: reservation.binding.inputsSha256 }];
+  const reconcileFile = put('reconcile.json', json({
+    upstream: reservation.upstream, inventory: { complete: true, records }, binding: reservation.binding, directory,
+  }));
+  const reconcile = run('reserve', reconcileFile);
+  assert.equal(reconcile.status, 0, reconcile.stderr);
+  assert.equal(JSON.parse(reconcile.stdout).reservation.version, '4.8.1+from.4.8.0');
+  assert.deepEqual(readFileSync(filename), original);
+  const inventory = readdirSync(directory).sort();
+
+  assert.equal(original.at(-1), 0x0a);
+  const withoutFinalNewline = original.subarray(0, -1);
+  writeFileSync(filename, withoutFinalNewline);
+  const retry = path.join(root, 'retry');
+  for (const args of [['build', requestFile, retry], ['validate', requestFile, output], ['reserve', reconcileFile]]) {
+    const result = run(...args);
+    assert.equal(result.status, 1, `${args[0]} accepted a rewritten reservation`);
+    assert.match(result.stderr, /Reservation must match the exact serialization emitted by reserve/);
+  }
+  assert.equal(existsSync(retry), false);
+  assert.deepEqual(readdirSync(directory).sort(), inventory);
+  assert.deepEqual(readFileSync(filename), withoutFinalNewline);
+  assert.equal(JSON.parse(readFileSync(path.join(output, 'candidate.json'))).reservationSha256, reservationSha256);
+});
+
 test('CLI rejects procedure changes and retained archive disagreement under the same reservation', t => {
   const { root, put, run, reserve } = cliFixture(t);
   const { buildRequest, requestFile, reservation } = reserve();
@@ -549,4 +592,40 @@ test('validation rejects extra files, links within output, and a linked output r
   const link = path.join(root, 'link');
   symlinkSync(output, link, 'dir');
   assert.throws(() => validateCandidate(input, link), /Candidate output must be a directory/);
+});
+
+test('validation rejects an extra empty output directory', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'impeccable-validate-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = fixture();
+  const output = path.join(root, 'retained');
+  const candidate = writeCandidate(input, output);
+  assert.deepEqual(validateCandidate(input, output), candidate);
+  mkdirSync(path.join(output, 'marketplace', 'empty'));
+  assert.throws(() => validateCandidate(input, output), /Candidate output inventory mismatch/);
+});
+
+test('validation rejects a mode-only change when the filesystem retains special bits', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'impeccable-validate-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = fixture();
+  const output = path.join(root, 'retained');
+  const candidate = writeCandidate(input, output);
+  const filename = path.join(output, 'candidate.json');
+  const original = readFileSync(filename);
+  const mode = statSync(filename).mode & 0o7777;
+  assert.equal(mode, 0o644);
+  const changed = mode | 0o4000;
+  chmodSync(filename, changed);
+  if ((statSync(filename).mode & 0o7777) !== changed) {
+    t.skip('The test filesystem did not retain the requested special mode bit.');
+    return;
+  }
+  assert.deepEqual(readFileSync(filename), original);
+  assert.throws(
+    () => validateCandidate(input, output),
+    { message: 'Candidate bytes or mode mismatch: candidate.json' },
+  );
+  chmodSync(filename, mode);
+  assert.deepEqual(validateCandidate(input, output), candidate);
 });

@@ -122,8 +122,8 @@ function* inlineBlocks(markdown) {
   let paragraph = [];
   for (const line of markdown.split(/\r\n?|\n/)) {
     if (fence) {
-      const closer = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-      if (closer && closer[1][0] === fence[0] && closer[1].length >= fence.length && !closer[2].trim()) fence = undefined;
+      const closer = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closer && closer[1][0] === fence[0] && closer[1].length >= fence.length) fence = undefined;
       continue;
     }
     // Opening info strings can contain Unicode separators within a CR/LF-split line.

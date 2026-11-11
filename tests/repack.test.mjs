@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { allocateVersion, selectRelease, reserveCandidate } from '../scripts/repack.mjs';
+import { jsonBytes } from '../scripts/lib/repack-package.mjs';
 
 test('allocates matching upstream version, then monotonic packaging and upstream corrections', () => {
   const inventory = { complete: true, records: [] };
@@ -145,7 +146,7 @@ test('preserves retained reservations with invalid schemas or unresolved binding
     { ...reservation, binding: { ...request.binding, inputsSha256: 'bad digest' } },
   ];
   for (const record of variants) {
-    const retained = Buffer.from(JSON.stringify(record));
+    const retained = jsonBytes(record);
     writeFileSync(path.join(request.directory, filename), retained);
     assert.throws(() => reserveCandidate(request), /Retained reservation needs schema 1 and immutable procedure and input identities/);
     assert.deepEqual(readdirSync(request.directory), [filename]);
@@ -155,7 +156,7 @@ test('preserves retained reservations with invalid schemas or unresolved binding
 
 test('rejects misnamed local reservations and releases the allocation lock', t => {
   const request = reservationRequest(t);
-  writeFileSync(path.join(request.directory, 'repack-v4.8.0.json'), JSON.stringify({ version: '4.9.0' }));
+  writeFileSync(path.join(request.directory, 'repack-v4.8.0.json'), jsonBytes({ version: '4.9.0' }));
   assert.throws(() => reserveCandidate(request), /Reservation filename and version disagree/);
   assert.deepEqual(readdirSync(request.directory), ['repack-v4.8.0.json']);
 });

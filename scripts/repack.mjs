@@ -19,6 +19,15 @@ function isReservationBinding(binding) {
     typeof binding.inputsSha256 === 'string' && /^[0-9a-f]{64}$/.test(binding.inputsSha256);
 }
 
+function readReservation(filename) {
+  const bytes = readFileSync(filename);
+  const reservation = JSON.parse(bytes);
+  if (!bytes.equals(jsonBytes(reservation))) {
+    throw new Error(`Reservation must match the exact serialization emitted by reserve: ${path.basename(filename)}`);
+  }
+  return { reservation, bytes };
+}
+
 export function reserveCandidate({ upstream, inventory, binding, directory, advance = false }) {
   if (!isReservationBinding(binding)) throw new Error('Reservation needs immutable procedure and input identities.');
   mkdirSync(directory, { recursive: true });
@@ -35,8 +44,7 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
   try {
     requireExposureInventory(inventory);
     const local = readdirSync(directory).filter(name => name.startsWith('repack-v')).map(name => {
-      const bytes = readFileSync(path.join(directory, name));
-      const record = JSON.parse(bytes);
+      const { reservation: record, bytes } = readReservation(path.join(directory, name));
       if (name !== `repack-v${record?.version}.json`) throw new Error('Reservation filename and version disagree.');
       if (record?.schema !== 1 || !isReservationBinding(record.binding)) {
         throw new Error(`Retained reservation needs schema 1 and immutable procedure and input identities: ${name}`);
@@ -68,7 +76,7 @@ export function loadBuildRequest(filename) {
   const resolve = name => path.resolve(path.dirname(filename), name);
   const pin = readJson(resolve(request.pin));
   const policy = readJson(resolve(request.policy));
-  const reservation = readJson(resolve(request.reservation));
+  const { reservation } = readReservation(resolve(request.reservation));
   if (reservation.schema !== 1 || reservation.upstream !== pin.version || reservation.binding?.inputsSha256 !== sha256(jsonBytes({ pin, policy })) || !/^[0-9a-f]{64}$/.test(reservation.exposureInventorySha256)) throw new Error('Reservation does not bind these pinned inputs and enrolled policy.');
   const { procedureRevision } = request;
   if (!isProcedureRevision(procedureRevision) || reservation.binding.procedureRevision !== procedureRevision) {
@@ -119,22 +127,30 @@ export function writeCandidate(input, output) {
 export function validateCandidate(input, output) {
   const result = buildCandidate(input);
   const expected = outputFiles(result);
-  const found = [];
+  const pending = new Set();
+  for (const file of expected) {
+    pending.add(file.name);
+    for (let parent = path.posix.dirname(file.name); parent !== '.'; parent = path.posix.dirname(parent)) {
+      pending.add(`${parent}/`);
+    }
+  }
   function walk(directory, prefix = '') {
     for (const name of readdirSync(directory)) {
       const filename = path.join(directory, name);
       const info = lstatSync(filename);
-      if (info.isDirectory()) walk(filename, `${prefix}${name}/`);
-      else if (info.isFile()) found.push(`${prefix}${name}`);
-      else throw new Error('Candidate contains links or special files.');
+      const isDirectory = info.isDirectory();
+      if (!isDirectory && !info.isFile()) throw new Error('Candidate contains links or special files.');
+      const entry = `${prefix}${name}${isDirectory ? '/' : ''}`;
+      if (!pending.delete(entry)) throw new Error(`Candidate output inventory mismatch: unexpected ${entry}`);
+      if (isDirectory) walk(filename, entry);
     }
   }
-  if (!lstatSync(output).isDirectory() || lstatSync(output).isSymbolicLink()) throw new Error('Candidate output must be a directory.');
+  if (!lstatSync(output).isDirectory()) throw new Error('Candidate output must be a directory.');
   walk(output);
-  if (JSON.stringify(found.sort()) !== JSON.stringify(expected.map(file => file.name).sort())) throw new Error('Candidate output inventory mismatch.');
+  if (pending.size) throw new Error('Candidate output inventory mismatch: missing expected paths.');
   for (const file of expected) {
     const filename = path.join(output, file.name);
-    if ((lstatSync(filename).mode & 0o777) !== file.mode || !readFileSync(filename).equals(file.bytes)) throw new Error(`Candidate bytes or mode mismatch: ${file.name}`);
+    if ((lstatSync(filename).mode & 0o7777) !== file.mode || !readFileSync(filename).equals(file.bytes)) throw new Error(`Candidate bytes or mode mismatch: ${file.name}`);
   }
   return result.candidate;
 }
