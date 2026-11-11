@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { mkdtempSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { allocateVersion, selectRelease, reserveCandidate } from '../scripts/repack.mjs';
@@ -33,6 +35,18 @@ test('selects numerically highest stable skill release only after complete enume
   ] };
   assert.equal(selectRelease(listing).id, 2);
   assert.throws(() => selectRelease({ ...listing, complete: false }), /complete/);
+});
+
+test('stops selection when a higher canonical skill release has unknown eligibility', () => {
+  const eligible = { tag_name: 'skill-v4.8.0', draft: false, prerelease: false };
+  const higher = { ...eligible, tag_name: 'skill-v4.9.0' };
+  const listing = release => ({ complete: true, releases: [eligible, { ...higher, ...release }] });
+  for (const flags of [{ prerelease: undefined }, { draft: undefined }, { prerelease: null }, { draft: 'false' }]) {
+    assert.throws(() => selectRelease(listing(flags)), /Cannot determine eligibility for upstream release: skill-v4\.9\.0/);
+  }
+  for (const flags of [{ prerelease: true }, { draft: true }, { draft: true, prerelease: undefined }, { draft: undefined, prerelease: true }]) {
+    assert.equal(selectRelease(listing(flags)), eligible);
+  }
 });
 
 test('excludes noncanonical tags and rejects out-of-range stable tags before sorting', () => {
@@ -67,6 +81,32 @@ function reservationRequest(t) {
   return { upstream: '4.8.0', inventory: { complete: true, records: [] }, binding, directory };
 }
 
+test('allocate and reserve require the caller to supply an exposure records array', t => {
+  const request = reservationRequest(t);
+  const command = fileURLToPath(new URL('../scripts/repack.mjs', import.meta.url));
+  const requestFile = path.join(request.directory, 'request.json');
+  function run(verb, records) {
+    writeFileSync(requestFile, JSON.stringify({ ...request, inventory: { complete: true, records } }));
+    return spawnSync(process.execPath, [command, verb, requestFile], { encoding: 'utf8' });
+  }
+  for (const verb of ['allocate', 'reserve']) {
+    for (const records of [undefined, null, '', 'records', {}, 0, false]) {
+      const result = run(verb, records);
+      assert.equal(result.status, 1, `${verb} accepted records ${JSON.stringify(records)}`);
+      assert.match(result.stderr, /complete exposure inventory is required/i);
+      assert.deepEqual(readdirSync(request.directory), ['request.json']);
+    }
+  }
+  const preview = run('allocate', []);
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(JSON.parse(preview.stdout).version, '4.8.0');
+  assert.deepEqual(readdirSync(request.directory), ['request.json']);
+  const reserved = run('reserve', []);
+  assert.equal(reserved.status, 0, reserved.stderr);
+  assert.equal(JSON.parse(reserved.stdout).reservation.version, '4.8.0');
+  assert.deepEqual(readdirSync(request.directory).sort(), ['repack-v4.8.0.json', 'request.json']);
+});
+
 test('reconciles matching local and exposure identities and rejects conflicting input digests', t => {
   const request = reservationRequest(t);
   const first = reserveCandidate(request);
@@ -75,6 +115,28 @@ test('reconciles matching local and exposure identities and rejects conflicting 
   assert.deepEqual(readdirSync(request.directory), ['repack-v4.8.0.json']);
   request.inventory.records[0].inputsSha256 = request.binding.inputsSha256;
   assert.equal(reserveCandidate(request).version, '4.8.1+from.4.8.0');
+});
+
+test('preserves retained reservations with invalid schemas or unresolved bindings', t => {
+  const request = reservationRequest(t);
+  const filename = 'repack-v4.8.0.json';
+  const reservation = { schema: 1, version: '4.8.0', binding: request.binding };
+  const variants = [
+    { version: reservation.version },
+    { ...reservation, schema: 2 },
+    { ...reservation, binding: undefined },
+    { ...reservation, binding: { inputsSha256: request.binding.inputsSha256 } },
+    { ...reservation, binding: { procedureRevision: request.binding.procedureRevision } },
+    { ...reservation, binding: { ...request.binding, procedureRevision: [request.binding.procedureRevision] } },
+    { ...reservation, binding: { ...request.binding, inputsSha256: 'bad digest' } },
+  ];
+  for (const record of variants) {
+    const retained = Buffer.from(JSON.stringify(record));
+    writeFileSync(path.join(request.directory, filename), retained);
+    assert.throws(() => reserveCandidate(request), /Retained reservation needs schema 1 and immutable procedure and input identities/);
+    assert.deepEqual(readdirSync(request.directory), [filename]);
+    assert.deepEqual(readFileSync(path.join(request.directory, filename)), retained);
+  }
 });
 
 test('rejects misnamed local reservations and releases the allocation lock', t => {

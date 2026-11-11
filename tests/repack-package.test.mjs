@@ -113,6 +113,22 @@ test('checks real inline links while ignoring code spans and indented fences', (
   assert.throws(() => buildCandidate(guide(examples + '\n\n[real](missing.md)')), /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/);
 });
 
+test('checks relative links with single-quoted titles', () => {
+  assert.doesNotThrow(() => buildCandidate(guide("[present](../SKILL.md 'Skill title')")));
+  assert.throws(
+    () => buildCandidate(guide("[missing](missing.md 'Missing guide')")),
+    /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/,
+  );
+});
+
+test('checks angle-bracket relative link destinations without the delimiters', () => {
+  assert.doesNotThrow(() => buildCandidate(guide("[present](<../SKILL.md>) [also present](<../SKILL.md> 'Skill title')")));
+  assert.throws(
+    () => buildCandidate(guide('[missing](<missing.md>)')),
+    /Missing or escaping relative support reference: reference\/guide\.md: missing\.md/,
+  );
+});
+
 test('identifies the referring file and target when an inline link has invalid encoding', () => {
   assert.throws(() => buildCandidate(guide('[invalid](bad%ZZ.md)')), /Invalid percent encoding in relative support reference: reference\/guide\.md: bad%ZZ\.md/);
 });
@@ -270,6 +286,23 @@ test('CLI rejects procedure changes and retained archive disagreement under the 
   assert.match(corrupt.stderr, /Pinned asset digest or size mismatch: universal\.zip/);
   assert.equal(existsSync(retry), false);
   assert.deepEqual(readFileSync(path.join(output, archiveName)), archive);
+});
+
+test('CLI rejects present malformed manifest keywords before creating output', t => {
+  for (const keywords of [false, null, 0, '', ['design', 42], { category: 'design' }]) {
+    const input = fixture();
+    const manifest = input.sources.find(entry => entry.name === '.claude-plugin/plugin.json');
+    manifest.bytes = json({ ...JSON.parse(manifest.bytes), keywords });
+    input.pin.sourceFiles.find(entry => entry.name === manifest.name).sha256 = sha256(manifest.bytes);
+    input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+    const { root, run, reserve } = cliFixture(t, { input });
+    const { requestFile } = reserve();
+    const output = path.join(root, 'rejected');
+    const result = run('build', requestFile, output);
+    assert.equal(result.status, 1, `Accepted keywords ${JSON.stringify(keywords)}`);
+    assert.match(result.stderr, /Malformed or unsupported upstream manifest/);
+    assert.equal(existsSync(output), false);
+  }
 });
 
 test('CLI rejects malformed signature JSON whose bytes match the pin', t => {

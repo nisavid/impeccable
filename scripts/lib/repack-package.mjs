@@ -98,10 +98,11 @@ function markdownWithoutCode(text) {
 }
 
 function validateSupportLinks(skill, files) {
+  const inlineLink = /\[[^\]]*\]\((?:<(?<delimited>[^<>\r\n]*)>|(?<bare>[^\s<>)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
   for (const file of skill.filter(file => file.name.endsWith('.md'))) {
     for (const prose of markdownWithoutCode(file.bytes.toString('utf8'))) {
-      for (const match of prose.matchAll(/\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g)) {
-        const target = match[1].split('#')[0];
+      for (const { groups } of prose.matchAll(inlineLink)) {
+        const target = (groups.delimited ?? groups.bare).split('#')[0];
         if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes('{{')) continue;
         let decoded;
         try {
@@ -155,7 +156,9 @@ export function buildCandidate(input) {
   same(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'Stop'], 'Unsupported hook events.');
   const manifest = JSON.parse(checkedFile(sourceMap, '.claude-plugin/plugin.json').bytes);
   const allowed = ['name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills'];
-  if (Object.keys(manifest).some(key => !allowed.includes(key)) || manifest.name !== 'impeccable' || manifest.version !== pin.version || typeof manifest.description !== 'string' || !manifest.description || typeof manifest.author?.name !== 'string' || Object.entries(manifest.author).some(([key, value]) => !['name', 'email', 'url'].includes(key) || typeof value !== 'string') || typeof manifest.homepage !== 'string' || !manifest.homepage.startsWith('https://') || manifest.repository !== 'https://github.com/pbakaus/impeccable' || (manifest.license && manifest.license !== policy.license) || (manifest.keywords && (!Array.isArray(manifest.keywords) || manifest.keywords.some(value => typeof value !== 'string')))) fail('Malformed or unsupported upstream manifest.');
+  const invalidKeywords = Object.hasOwn(manifest, 'keywords') &&
+    (!Array.isArray(manifest.keywords) || manifest.keywords.some(value => typeof value !== 'string'));
+  if (Object.keys(manifest).some(key => !allowed.includes(key)) || manifest.name !== 'impeccable' || manifest.version !== pin.version || typeof manifest.description !== 'string' || !manifest.description || typeof manifest.author?.name !== 'string' || Object.entries(manifest.author).some(([key, value]) => !['name', 'email', 'url'].includes(key) || typeof value !== 'string') || typeof manifest.homepage !== 'string' || !manifest.homepage.startsWith('https://') || manifest.repository !== 'https://github.com/pbakaus/impeccable' || (manifest.license && manifest.license !== policy.license) || invalidKeywords) fail('Malformed or unsupported upstream manifest.');
   const metadata = Object.fromEntries(['name', 'description', 'author', 'homepage', 'keywords'].filter(key => key in manifest).map(key => [key, manifest[key]]));
   metadata.version = version;
   metadata.repository = 'https://github.com/nisavid/impeccable';
@@ -176,5 +179,5 @@ export function buildCandidate(input) {
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
   const bytes = writeZip(payload);
   const catalog = { name: 'impeccable', interface: { displayName: 'Impeccable' }, plugins: [{ name: 'impeccable', source: { source: 'local', path: './plugins/impeccable' }, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }, category: 'Creativity' }] };
-  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation covers inline Markdown links outside code spans and line-leading fences; client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
+  return { archive: bytes, payload: readZip(bytes), catalog, candidate: { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation covers bare and angle-bracket destinations with optional single- or double-quoted titles outside code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] } };
 }

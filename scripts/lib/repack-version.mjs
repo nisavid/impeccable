@@ -15,9 +15,13 @@ function compare(a, b) {
   return 0;
 }
 
+export function requireExposureInventory(inventory) {
+  if (inventory?.complete !== true || !Array.isArray(inventory.records)) throw new Error('A complete exposure inventory is required.');
+}
+
 export function allocateVersion(upstream, inventory, { advance = false } = {}) {
   const base = numeric(upstream);
-  if (inventory?.complete !== true || !Array.isArray(inventory.records)) throw new Error('A complete exposure inventory is required.');
+  requireExposureInventory(inventory);
   const identities = new Map();
   for (const record of inventory.records) {
     const known = identities.get(record.version) ?? {};
@@ -42,10 +46,15 @@ export function selectRelease(listing) {
   if (listing?.complete !== true || !Array.isArray(listing.releases)) throw new Error('A complete release enumeration is required.');
   const releases = [];
   for (const release of listing.releases) {
-    if (release?.draft !== false || release.prerelease !== false || typeof release.tag_name !== 'string' || !release.tag_name.startsWith('skill-v')) continue;
-    const version = release.tag_name.slice(7);
+    const tag = release?.tag_name;
+    if (typeof tag !== 'string' || !tag.startsWith('skill-v')) continue;
+    const version = tag.slice(7);
     const match = version.match(VERSION);
     if (!match || match[0] !== version) continue;
+    if (release.draft === true || release.prerelease === true) continue;
+    if (release.draft !== false || release.prerelease !== false) {
+      throw new Error(`Cannot determine eligibility for upstream release: ${tag}`);
+    }
     releases.push({ release, parts: numeric(version) });
   }
   releases.sort((a, b) => compare(b.parts, a.parts));

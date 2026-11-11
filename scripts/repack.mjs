@@ -7,11 +7,20 @@ import { buildCandidate, jsonBytes } from './lib/repack-package.mjs';
 import { safePath } from './lib/repack-zip.mjs';
 
 export { allocateVersion, selectRelease } from './lib/repack-version.mjs';
-import { allocateVersion, selectRelease } from './lib/repack-version.mjs';
+import { allocateVersion, requireExposureInventory, selectRelease } from './lib/repack-version.mjs';
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
+function isProcedureRevision(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+}
+
+function isReservationBinding(binding) {
+  return isProcedureRevision(binding?.procedureRevision) &&
+    typeof binding.inputsSha256 === 'string' && /^[0-9a-f]{64}$/.test(binding.inputsSha256);
+}
+
 export function reserveCandidate({ upstream, inventory, binding, directory, advance = false }) {
-  if (!/^[0-9a-f]{40}$/.test(binding?.procedureRevision) || !/^[0-9a-f]{64}$/.test(binding?.inputsSha256)) throw new Error('Reservation needs immutable procedure and input identities.');
+  if (!isReservationBinding(binding)) throw new Error('Reservation needs immutable procedure and input identities.');
   mkdirSync(directory, { recursive: true });
   const lock = path.join(directory, '.allocation-lock');
   try {
@@ -24,13 +33,17 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
   let reservation;
   let failure;
   try {
+    requireExposureInventory(inventory);
     const local = readdirSync(directory).filter(name => name.startsWith('repack-v')).map(name => {
       const bytes = readFileSync(path.join(directory, name));
       const record = JSON.parse(bytes);
-      if (name !== `repack-v${record.version}.json`) throw new Error('Reservation filename and version disagree.');
-      return { version: record.version, status: 'reserved', inputsSha256: record.binding?.inputsSha256, reservationSha256: sha256(bytes) };
+      if (name !== `repack-v${record?.version}.json`) throw new Error('Reservation filename and version disagree.');
+      if (record?.schema !== 1 || !isReservationBinding(record.binding)) {
+        throw new Error(`Retained reservation needs schema 1 and immutable procedure and input identities: ${name}`);
+      }
+      return { version: record.version, status: 'reserved', inputsSha256: record.binding.inputsSha256, reservationSha256: sha256(bytes) };
     });
-    const exposureInventory = { ...inventory, records: [...(inventory?.records ?? []), ...local] };
+    const exposureInventory = { ...inventory, records: [...inventory.records, ...local] };
     const version = allocateVersion(upstream, exposureInventory, { advance });
     reservation = { schema: 1, version, upstream, binding, advance, exposureInventory, exposureInventorySha256: sha256(jsonBytes(exposureInventory)) };
     const filename = path.join(directory, `repack-v${version}.json`);
@@ -58,7 +71,7 @@ export function loadBuildRequest(filename) {
   const reservation = readJson(resolve(request.reservation));
   if (reservation.schema !== 1 || reservation.upstream !== pin.version || reservation.binding?.inputsSha256 !== sha256(jsonBytes({ pin, policy })) || !/^[0-9a-f]{64}$/.test(reservation.exposureInventorySha256)) throw new Error('Reservation does not bind these pinned inputs and enrolled policy.');
   const { procedureRevision } = request;
-  if (typeof procedureRevision !== 'string' || procedureRevision.length !== 40 || !/^[0-9a-f]+$/.test(procedureRevision) || reservation.binding.procedureRevision !== procedureRevision) {
+  if (!isProcedureRevision(procedureRevision) || reservation.binding.procedureRevision !== procedureRevision) {
     throw new Error('Procedure revision must be supplied and match the reservation.');
   }
   const sourceRoot = resolve(request.sourceRoot);
