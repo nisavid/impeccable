@@ -1,5 +1,34 @@
 # Repository Guidelines
 
+## Fork scope
+
+Ivan's instructions govern issue and pull-request work in `nisavid/impeccable`.
+The contribution restrictions below naming `pbakaus` and `abdulwahabone` apply
+to upstream `pbakaus/impeccable`. Follow them when contributing upstream.
+
+Before using the engineering skills, read the
+[Agent skills setup](CLAUDE.md#agent-skills).
+
+## Operating Policy
+
+- Perform assigned engineering and operations autonomously until stakeholder
+  policy or an unavailable control surface requires escalation. Ivan reserves
+  authority over project initiatives and the start or continuation of work
+  sessions. Within an active user-directed session, drive execution, review
+  loops, commits, publication, and cleanup unless escalation is required.
+- Escalate when an action affects stakeholder concerns and the stakeholder's
+  policy is unknown or uncertain, or when a required action lacks an autonomous
+  control surface.
+- For decisions with distinct choices, use a multiple-choice input tool when
+  available and allow a custom answer. For a prescribed operator action, give
+  concise steps and copyable commands, preferably one line where practical.
+- State the result, confirmation, artifact, or output needed to return control
+  to the agent, and make it easy to verify.
+- Prefer verified repository facts over guesses or aspirational guidance.
+- Before scouting a task, check whether proposed agent instructions are
+  durable, non-obvious, and useful. Remove guidance made redundant by ordinary
+  file discovery.
+
 ## Project Structure & Module Organization
 
 `skill/` is the source of truth for the Impeccable skill: `SKILL.src.md`, `reference/`, `scripts/`, and `agents/`. `skill/scripts/` holds the launcher (`impeccable`, `impeccable.cmd`), the pinned engine `VERSION`, `command-metadata.json`, and the in-page live-mode JS. Every skill verb (`{{scripts_path}}/impeccable <verb>`) runs in the engine binary, built from this repo's Cargo workspace under `crates/`; the root `ENGINE_VERSION` pins the released binary used by installs. Read `docs/ENGINE.md` before changing runtime code. Build logic lives in `scripts/`, with provider configs in `scripts/lib/transformers/`. `cli/` is the npm shim that runs the same binary, the browser extension lives in `extension/`, and regression coverage lives in the Rust crates and `tests/`, including fixtures under `tests/fixtures/` and behavior goldens under `tests/oracle/`. The website and service live in the separate private `impeccable-site` repo. `dist/` and `build/` are generated and gitignored. The root harness folders (`.agents/`, `.claude/`, `.cursor/`, etc.) and `plugin/` are generated distribution artifacts that are tracked for direct repo installs, not hand-authored source.
