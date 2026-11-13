@@ -80,8 +80,16 @@ function runtimePackage(t) {
   mkdirSync(cwd);
   mkdirSync(home);
   mkdirSync(bin);
-  // Give the launcher its path utility without inheriting installed engines or download tools.
-  symlinkSync('/usr/bin/dirname', path.join(bin, 'dirname'));
+  // Keep only the utilities the launcher and synthetic engine need.
+  for (const utility of ['dirname', 'cat']) {
+    const resolved = spawnSync('/bin/sh', ['-c', 'command -v "$1"', 'sh', utility], {
+      env: { PATH: process.env.PATH },
+      encoding: 'utf8',
+    });
+    assert.ifError(resolved.error);
+    assert.equal(resolved.status, 0, `Required POSIX utility is missing from PATH: ${utility}`);
+    symlinkSync(path.resolve(resolved.stdout.replace(/\n$/, '')), path.join(bin, utility));
+  }
   const env = { HOME: home, PATH: bin, PLUGIN_ROOT: pluginRoot, IMPECCABLE_NO_TELEMETRY: '1' };
   const run = (command, args, options = {}) => {
     const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 5000, ...options });
@@ -102,7 +110,7 @@ test('runs the generated POSIX launcher and both relocated hooks outside the pac
   writeFileSync(engine, `#!/bin/sh
 set -eu
 printf '%s\\n' "$0" "$PWD" "$IMPECCABLE_SKILL_DIR" "$IMPECCABLE_SELF" "$@"
-if [ "$1" = hook ]; then /bin/cat; fi
+if [ "$1" = hook ]; then cat; fi
 `, { mode: 0o755 });
   const engineEnv = { ...env, IMPECCABLE_BIN: engine };
   const output = (...args) => [engine, cwd, skill, launcher, ...args, ''].join('\n');
