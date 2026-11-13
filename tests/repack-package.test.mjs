@@ -95,7 +95,7 @@ function runtimePackage(t) {
     const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 5000, ...options });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
-    return result.stdout;
+    return result;
   };
   const manifest = JSON.parse(readFileSync(path.join(pluginRoot, '.codex-plugin/plugin.json'), 'utf8'));
   const { hooks } = JSON.parse(readFileSync(path.join(pluginRoot, manifest.hooks), 'utf8'));
@@ -114,7 +114,7 @@ if [ "$1" = hook ]; then cat; fi
 `, { mode: 0o755 });
   const engineEnv = { ...env, IMPECCABLE_BIN: engine };
   const output = (...args) => [engine, cwd, skill, launcher, ...args, ''].join('\n');
-  assert.equal(run(launcher, ['context', 'two words'], { env: engineEnv }), output('context', 'two words'));
+  assert.equal(run(launcher, ['context', 'two words'], { env: engineEnv }).stdout, output('context', 'two words'));
 
   const postToolUse = {
     hook_event_name: 'PostToolUse', session_id: 'fixture', cwd,
@@ -124,10 +124,11 @@ if [ "$1" = hook ]; then cat; fi
   for (const event of [postToolUse, stop]) {
     const [{ hooks: [{ command }] }] = hooks[event.hook_event_name];
     const input = JSON.stringify(event);
-    assert.equal(run('/bin/sh', ['-c', command], { env: engineEnv, input }), output('hook') + input);
+    assert.equal(run('/bin/sh', ['-c', command], { env: engineEnv, input }).stdout, output('hook') + input);
 
     const wrongRoot = { ...engineEnv, PLUGIN_ROOT: path.join(root, 'missing package') };
-    assert.equal(run('/bin/sh', ['-c', command], { env: wrongRoot, input }), '');
+    const { stdout, stderr } = run('/bin/sh', ['-c', command], { env: wrongRoot, input });
+    assert.deepEqual({ stdout, stderr }, { stdout: '', stderr: '' }, `${event.hook_event_name} with a missing plugin root`);
   }
 });
 
@@ -139,7 +140,7 @@ test('probes the local engine through the generated POSIX launcher', {
   const engine = realpathSync(localEngine);
   accessSync(engine, constants.X_OK);
   const digest = sha256(readFileSync(engine));
-  const stdout = run(launcher, ['engine-probe'], { env: { ...env, IMPECCABLE_BIN: engine } });
+  const { stdout } = run(launcher, ['engine-probe'], { env: { ...env, IMPECCABLE_BIN: engine } });
   const probe = /^impeccable-engine (\S+)\n$/.exec(stdout);
   assert.ok(probe, `Unexpected engine probe response: ${JSON.stringify(stdout)}`);
   assert.equal(sha256(readFileSync(engine)), digest, 'engine bytes changed during probe');
