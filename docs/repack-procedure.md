@@ -2,6 +2,14 @@
 
 `scripts/repack.mjs` reserves a version, builds a portable plugin archive and matching marketplace tree, and validates the retained bytes. It performs no network requests, release uploads, tag writes, or marketplace promotion. Use it from the independently reviewed procedure revision under the [acceptance plan](repack-acceptance-plan.md). A candidate remains unqualified until that plan's runtime and consumer observations pass.
 
+## Invoke the offline CLI
+
+Pass a request filename to `select`, `allocate`, or `reserve`. Pass a build request filename and output directory to `build` or `validate`. Relative command-line paths and the `directory` field in a reservation request resolve from the process working directory. Relative paths inside a build request resolve from that file's directory.
+
+- Exit `0` writes one JSON line to stdout. Require the expected `outcome` before continuing. The commands return `{outcome: "selected", release}`, `{outcome: "allocated-preview", version}`, `{outcome: "reserved", reservation}`, `{outcome: "candidate", candidate}`, or `{outcome: "validated", candidate}`, respectively.
+- Exit `1` writes one JSON line to stderr with `outcome: "failed"`, an `error` message, and `lockCleanup` when reservation lock cleanup fails. The CLI supplies no general machine-readable error category.
+- Exit `2` writes a plain-text `Usage:` line to stderr before reading a request.
+
 ## Collect immutable inputs
 
 Enumerate every upstream release page, retaining the response identities and pagination evidence. Pass `select` a JSON object with `complete: true` and the complete `releases` array. The selector chooses the numerically highest published stable `skill-vMAJOR.MINOR.PATCH` with canonical decimal components. It excludes drafts, prereleases, other components, and noncanonical tags. A row without a nonempty tag name stops selection unless it is explicitly a draft or prerelease. A canonical skill tag with unknown draft or prerelease eligibility also stops selection. A stable skill tag outside the safe integer range also stops selection. `complete` is an explicit assertion by the collecting procedure; the offline selector cannot establish it.
@@ -72,19 +80,25 @@ Collect the complete exposure inventory, including candidate tags, public releas
 
 All release paths use this allocator. The equal-version and advanced-patch branches implement [ADR 0001](adr/0001-repack-identity-and-versioning.md), together with the pinned [Real Skills allocation procedure](https://github.com/nisavid/real-skills/blob/0c1ebe0a778a861dbfee9bb2f84dec7c9ad1cf6a/docs/agents/release-archives.md). `advance: true` selects an advanced patch even when matching upstream would otherwise be eligible. An older upstream major/minor line requires a decision rather than silently creating a version below prior exposure.
 
-Create a reservation request with `upstream`, `inventory`, optional `advance`, `directory`, and `binding`. `binding.procedureRevision` is the reviewed full Git SHA. `binding.inputsSha256` hashes the UTF-8 bytes of `JSON.stringify({pin, policy}, null, 2) + "\n"`. Verify the executing procedure against that reviewed revision before reserving. Retain the execution revision and the evidence tying the invoked files to it. Resolve `directory` from the command's working directory.
+Create a reservation request with `upstream`, `inventory`, optional `advance`, `directory`, and `binding`. `binding.procedureRevision` is the reviewed full Git SHA. `binding.inputsSha256` hashes the UTF-8 bytes of `JSON.stringify({pin, policy}, null, 2) + "\n"`. Verify the executing procedure against that reviewed revision before reserving. Retain the execution revision and the evidence tying the invoked files to it.
 
 ```sh
 node scripts/repack.mjs reserve reservation-request.json
 ```
 
-The command acquires `.allocation-lock`, incorporates every existing `repack-v*.json` record in that directory, and writes a create-only `repack-v<version>.json` reservation. It retains the full exposure snapshot and its hash. Preserve the exact bytes emitted by `reserve`, including the final newline. Reconciliation, build, and validation require that serialization, which includes every writer-emitted top-level field in order and preserves the supplied order of nested fields. A retained reservation needs schema `1` and a valid procedure revision and input digest. If either is unresolved, reconcile the retained record before allocating again. Keep that record private when its evidence includes account details. Public `RELEASE.json` retains the exposed version list and the inventory and reservation hashes, leaving account records out. A lock left by interruption requires reconciliation. On cleanup failure, the command reports the primary error and `lockCleanup`, which includes the reservation path if the write completed. Confirm the lock owner has stopped, inspect and retain the reservation file if present, and verify its version and binding against the intended request. Resume with the reconciled reservation after resolving the lock. `allocate` takes `{upstream, inventory, advance?}` and produces only a preview, never a reservation.
+The command acquires `.allocation-lock` and reads every directory entry whose name starts with `repack-v`. Each must parse as a reservation with a matching `repack-v<version>.json` filename, schema `1`, and a valid procedure revision and input digest. Keep temporary files and backups outside that prefix. The command includes the retained reservations in the allocation inventory and writes a create-only `repack-v<version>.json` file containing the full exposure snapshot and its hash.
+
+Use the stdout `reservation.version` to locate the file. Pass its path as `reservation` in the build request. Keep the file's exact bytes, including field order and the final newline. The compact stdout response serves as a receipt. Keep the file private when its evidence includes account details. Public `RELEASE.json` retains the exposed version list and the inventory and reservation hashes.
+
+`reserve` always attempts a new allocation. Repeating a successful request can allocate a higher version even with the same binding. For a preview, pass `{upstream, inventory, advance?}` to `allocate`.
+
+An interrupted or failed `reserve` can leave a reservation, a lock, or both. Before retrying an uncertain attempt, establish that the original process has stopped using run or process evidence. The lock directory records no owner. Inspect the reservation directory, checking `lockCleanup.reservation` when available. A missing path in the error does not establish that no file was written. If a file came from the interrupted attempt, verify its version and filename, upstream, and binding against the attempt's evidence. Compare the file's exact bytes to any recorded digest and reuse the verified file for build after reconciling any stale lock. If the retained state is incomplete, conflicting, or ambiguous, stop and reconcile it before allocating again.
 
 The local lock serializes users of the same directory. Hosted release attempts must additionally serialize their entire reconcile/reserve/publish sequence and establish the create-only immutable remote candidate tag before any consumer exposure. Synchronize all durable reservation records into the local directory before allocation. A local reservation alone establishes neither remote uniqueness nor exposure-inventory completeness. Retain failed reservations permanently.
 
 ## Build twice and validate
 
-Create `build-request.json` with `procedureRevision` and paths `universal`, `signature`, `pin`, `policy`, `reservation`, and `sourceRoot`. Paths resolve relative to the request file. Stage the selected supplemental files at their original paths under `sourceRoot`. The loader reads the pin-listed paths and requires a directory root and regular files without symbolic links beneath it.
+Create `build-request.json` with `procedureRevision` and paths `universal`, `signature`, `pin`, `policy`, `reservation`, and `sourceRoot`. Stage the selected supplemental files at their original paths under `sourceRoot`. The loader reads the pin-listed paths and requires a directory root and regular files without symbolic links beneath it.
 
 Set `procedureRevision` from the verified execution revision, using the retained checkout and file evidence. Check it again before building or resuming. The CLI compares this supplied revision with the reservation and verifies the bound inputs, upstream baseline, and allocation. The release path owns verification of the files it actually invokes.
 
@@ -94,7 +108,7 @@ node scripts/repack.mjs build build-request.json second
 node scripts/repack.mjs validate build-request.json first
 ```
 
-Each build requires a new output directory and writes:
+Each build requires a new output directory under an existing parent. It writes the following files.
 
 - `impeccable-<full-version>.zip`, containing one plugin at the archive root
 - `candidate.json`, with input identities, hashes, modes, structural checks, and explicit qualification limits
@@ -121,6 +135,6 @@ node --test --test-name-pattern='generated POSIX launcher' tests/repack-package.
 
 The fixture runs the POSIX launcher and both relocated hook commands from a separate project with a synthetic engine. It checks argument and event-payload forwarding and the hook guards when the plugin root is absent. If the test runner finds a local engine through `IMPECCABLE_BIN` or the standard test binary paths, a separate probe through the generated launcher reports its path, version, and SHA-256. Otherwise the probe reports a skip. Qualification still requires runtime observations on the selected candidate and on each consumer route. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
 
-Commands return one JSON result: `selected`, `allocated-preview`, `reserved`, `candidate`, or `validated`. Successful completion exits `0`; rejected inputs and validation errors produce `outcome: "failed"` on stderr and exit `1`; command-line usage errors exit `2`. File-write failures can leave an incomplete new output directory; preserve it as failure evidence and use a new directory after reconciliation. Existing output directories are never reused by `build`.
+File-write failures can leave an incomplete new output directory; preserve it as failure evidence and use a new directory after reconciliation. Existing output directories are never reused by `build`.
 
 Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs` after changing the allocator, builder, ZIP reader, or this procedure. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.
