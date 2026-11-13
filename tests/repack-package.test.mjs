@@ -6,20 +6,23 @@ import { writeZip, readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { sha256 } from '../scripts/repack.mjs';
 import { writeCandidate, validateCandidate } from '../scripts/repack.mjs';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ENGINE_MISSING_MESSAGE, findEngineBinary } from './lib/engine-bin.mjs';
 
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 const file = (name, content, mode = 0o644) => ({ name, bytes: Buffer.isBuffer(content) ? content : Buffer.from(content), mode });
-function fixture(changeSkill = () => {}) {
+function fixture(changeSkill = () => {}, runtimeOrigins = []) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n')];
   const windows = 'cmd /c if exist ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
   const nativeWindows = 'cmd /c if exist "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
-  const projectHooks = { hooks: { PostToolUse: [{ matcher: 'Edit|Write|apply_patch', hooks: [{ type: 'command', command: '".codex/skills/impeccable/scripts/impeccable" hook', commandWindows: windows, timeout: 5, statusMessage: 'Checking UI changes' }] }], Stop: [{ hooks: [{ type: 'command', command: '".codex/skills/impeccable/scripts/impeccable" hook', commandWindows: windows, timeout: 30, statusMessage: 'Design deep pass' }] }] } };
+  const launcher = '".codex/skills/impeccable/scripts/impeccable"';
+  const command = `[ ! -f ${launcher} ] || ${launcher} hook`;
+  const projectHooks = { hooks: { PostToolUse: [{ matcher: 'Edit|Write|apply_patch', hooks: [{ type: 'command', command, commandWindows: windows, timeout: 5, statusMessage: 'Checking UI changes' }] }], Stop: [{ hooks: [{ type: 'command', command, commandWindows: windows, timeout: 30, statusMessage: 'Design deep pass' }] }] } };
   const hooks = JSON.parse(JSON.stringify(projectHooks).replaceAll('.codex/skills/impeccable', '${PLUGIN_ROOT}/skills/impeccable'));
   hooks.hooks.PostToolUse[0].hooks[0].commandWindows = nativeWindows;
   hooks.hooks.Stop[0].hooks[0].commandWindows = nativeWindows;
@@ -30,7 +33,7 @@ function fixture(changeSkill = () => {}) {
   const sources = [file('LICENSE', 'Apache fixture\n'), file('NOTICE.md', 'Attribution fixture\n'), file('.claude-plugin/plugin.json', json(manifest)), file('scripts/lib/assets/plugin-icon.png', 'icon')];
   const asset = (id, name, bytes) => ({ id, name, size: bytes.length, sha256: sha256(bytes) });
   const pin = { schema: 1, repository: 'pbakaus/impeccable', version: '4.8.0', releaseId: 101, tag: 'skill-v4.8.0', tagObject: 'a'.repeat(40), commit: 'b'.repeat(40), assets: [asset(1, 'universal.zip', universal), asset(2, 'universal.zip.sig.json', signature)], sourceFiles: sources.map(f => ({ name: f.name, sourcePath: f.name, sha256: sha256(f.bytes), mode: f.mode })) };
-  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins: [] };
+  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
   const procedureRevision = 'c'.repeat(40);
   const version = '4.8.1+from.4.8.0';
   const exposureInventory = { complete: true, records: [{ version: '4.8.0' }] };
@@ -57,6 +60,82 @@ test('builds byte-identical portable and marketplace payloads preserving upstrea
   assert.equal(first.candidate.upstream.commit, input.pin.commit);
   assert.equal(first.candidate.qualification, 'required');
   assert.deepEqual(first.catalog, { name: 'impeccable', interface: { displayName: 'Impeccable' }, plugins: [{ name: 'impeccable', source: { source: 'local', path: './plugins/impeccable' }, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }, category: 'Creativity' }] });
+});
+
+function runtimePackage(t) {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'impeccable-repack-runtime-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const output = path.join(root, 'generated candidate');
+  const input = fixture(files => {
+    const launcher = files.find(file => file.name === 'scripts/impeccable');
+    launcher.bytes = readFileSync(new URL('../skill/scripts/impeccable', import.meta.url));
+  }, ['https://github.com', 'https://impeccable.style']);
+  writeCandidate(input, output);
+  const pluginRoot = path.join(output, 'marketplace/plugins/impeccable');
+  const skill = path.join(pluginRoot, 'skills/impeccable');
+  const launcher = path.join(skill, 'scripts/impeccable');
+  const cwd = path.join(root, 'separate project');
+  const home = path.join(root, 'isolated home');
+  const bin = path.join(root, 'bin');
+  mkdirSync(cwd);
+  mkdirSync(home);
+  mkdirSync(bin);
+  // Give the launcher its path utility without inheriting installed engines or download tools.
+  symlinkSync('/usr/bin/dirname', path.join(bin, 'dirname'));
+  const env = { HOME: home, PATH: bin, PLUGIN_ROOT: pluginRoot, IMPECCABLE_NO_TELEMETRY: '1' };
+  const run = (command, args, options = {}) => {
+    const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 5000, ...options });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  const manifest = JSON.parse(readFileSync(path.join(pluginRoot, '.codex-plugin/plugin.json'), 'utf8'));
+  const { hooks } = JSON.parse(readFileSync(path.join(pluginRoot, manifest.hooks), 'utf8'));
+  return { root, cwd, skill, launcher, env, run, hooks };
+}
+
+const noPosixShell = process.platform === 'win32' ? 'POSIX launcher and hook commands require /bin/sh' : false;
+
+test('runs the generated POSIX launcher and both relocated hooks outside the package', { skip: noPosixShell }, t => {
+  const { root, cwd, skill, launcher, env, run, hooks } = runtimePackage(t);
+  const engine = path.join(root, 'fixture engine');
+  writeFileSync(engine, `#!/bin/sh
+set -eu
+printf '%s\\n' "$0" "$PWD" "$IMPECCABLE_SKILL_DIR" "$IMPECCABLE_SELF" "$@"
+if [ "$1" = hook ]; then /bin/cat; fi
+`, { mode: 0o755 });
+  const engineEnv = { ...env, IMPECCABLE_BIN: engine };
+  const output = (...args) => [engine, cwd, skill, launcher, ...args, ''].join('\n');
+  assert.equal(run(launcher, ['context', 'two words'], { env: engineEnv }), output('context', 'two words'));
+
+  const postToolUse = {
+    hook_event_name: 'PostToolUse', session_id: 'fixture', cwd,
+    tool_name: 'Edit', tool_input: { file_path: path.join(cwd, 'page.css') },
+  };
+  const stop = { hook_event_name: 'Stop', session_id: 'fixture', cwd, stop_hook_active: false };
+  for (const event of [postToolUse, stop]) {
+    const [{ hooks: [{ command }] }] = hooks[event.hook_event_name];
+    const input = JSON.stringify(event);
+    assert.equal(run('/bin/sh', ['-c', command], { env: engineEnv, input }), output('hook') + input);
+
+    const wrongRoot = { ...engineEnv, PLUGIN_ROOT: path.join(root, 'missing package') };
+    assert.equal(run('/bin/sh', ['-c', command], { env: wrongRoot, input }), '');
+  }
+});
+
+const localEngine = noPosixShell ? null : findEngineBinary();
+test('probes the local engine through the generated POSIX launcher', {
+  skip: noPosixShell || (!localEngine && ENGINE_MISSING_MESSAGE),
+}, t => {
+  const { launcher, env, run } = runtimePackage(t);
+  const engine = realpathSync(localEngine);
+  accessSync(engine, constants.X_OK);
+  const digest = sha256(readFileSync(engine));
+  const stdout = run(launcher, ['engine-probe'], { env: { ...env, IMPECCABLE_BIN: engine } });
+  const probe = /^impeccable-engine (\S+)\n$/.exec(stdout);
+  assert.ok(probe, `Unexpected engine probe response: ${JSON.stringify(stdout)}`);
+  assert.equal(sha256(readFileSync(engine)), digest, 'engine bytes changed during probe');
+  t.diagnostic(JSON.stringify({ engine, version: probe[1], sha256: digest }));
 });
 
 test('rejects corrupt assets, changed input bindings, changed trust and unsupported manifests', () => {

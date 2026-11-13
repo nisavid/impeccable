@@ -113,7 +113,13 @@ The support check requires the enrolled paths and checks relative destinations i
 
 The builder resolves recognized relative targets against the referring file, after removing fragments and decoding percent escapes. A normalized path to the skill root is valid. Missing paths and paths outside that root fail the check. The check covers this inline grammar and the enrolled paths. Dynamic references, external URLs, and client discovery require separate evidence.
 
-Run deterministic launcher, actual-engine, and hook fixtures separately, recording the actual engine path, version, and digest. Then complete each consumer route's observations before qualification. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
+Run the generated-package runtime fixture with:
+
+```sh
+node --test --test-name-pattern='generated POSIX launcher' tests/repack-package.test.mjs
+```
+
+The fixture runs the POSIX launcher and both relocated hook commands from a separate project with a synthetic engine. It checks argument and event-payload forwarding and the hook guards when the plugin root is absent. If the test runner finds a local engine through `IMPECCABLE_BIN` or the standard test binary paths, a separate probe through the generated launcher reports its path, version, and SHA-256. Otherwise the probe reports a skip. Qualification still requires runtime observations on the selected candidate and on each consumer route. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
 
 Commands return one JSON result: `selected`, `allocated-preview`, `reserved`, `candidate`, or `validated`. Successful completion exits `0`; rejected inputs and validation errors produce `outcome: "failed"` on stderr and exit `1`; command-line usage errors exit `2`. File-write failures can leave an incomplete new output directory; preserve it as failure evidence and use a new directory after reconciliation. Existing output directories are never reused by `build`.
 
