@@ -64,7 +64,12 @@ export function verifyInputs({ universal, signature, sources, pin, policy, proce
   }
   const expectedSources = ['.claude-plugin/plugin.json', 'scripts/lib/assets/plugin-icon.png', ...policy.licenseFiles.map(file => file.name)].sort();
   same([...sourceMap.keys()].sort(), expectedSources, 'Unsupported supplemental source layout.');
-  return { archive: readZip(universal), sourceMap, signature: { keyId: envelope.keyId, sha256: envelope.sha256, verified: true } };
+  const archive = readZip(universal);
+  safePath(policy.skillPrefix, true); safePath(policy.projectHooksPath); safePath(policy.projectSkillPath);
+  if (!policy.skillPrefix.endsWith('/') || policy.projectSkillPath + '/' !== policy.skillPrefix) fail('Unsupported skill layout enrollment.');
+  const skill = archive.filter(file => file.name.startsWith(policy.skillPrefix)).map(file => ({ ...file, name: file.name.slice(policy.skillPrefix.length) }));
+  const capabilities = validateSkill(skill, policy);
+  return { archive, sourceMap, signature: { keyId: envelope.keyId, sha256: envelope.sha256, verified: true }, capabilities };
 }
 
 function transformHooks(hooks, projectSkillPath) {
@@ -99,6 +104,47 @@ function validateSupportLinks(skill, files) {
   }
 }
 
+function validateRuntimeBaseline(runtime, files, baseline) {
+  const areas = ['hookExecution', 'executableSelection', 'engineAcquisition', 'cacheMutation', 'networkDestinations', 'browserLoopback', 'processAndFilesystemAuthority'];
+  if (!baseline || !Array.isArray(baseline.files) || !areas.every(area => typeof baseline.capabilities?.[area] === 'string' && baseline.capabilities[area].trim())) {
+    fail('Complete reviewed runtime baseline required.');
+  }
+  const engine = baseline.engine;
+  if (typeof engine?.version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(engine.version) ||
+      typeof engine.checksumManifestSha256 !== 'string' || !engine.checksums || Array.isArray(engine.checksums) ||
+      typeof engine.checksums !== 'object' || !Object.keys(engine.checksums).length) {
+    fail('Complete reviewed engine identity required.');
+  }
+  digest(engine.checksumManifestSha256);
+  for (const [asset, checksum] of Object.entries(engine.checksums)) {
+    if (!/^impeccable-[a-z0-9-]+(?:\.exe)?$/.test(asset) || typeof checksum !== 'string') fail('Invalid enrolled engine checksum.');
+    digest(checksum);
+  }
+  const version = checkedFile(files, 'scripts/VERSION').bytes.toString('utf8').trim();
+  const manifest = checkedFile(files, 'scripts/engine-checksums.txt').bytes;
+  if (version !== engine.version || hash(manifest) !== engine.checksumManifestSha256) {
+    fail('Engine identity changed; investigate before construction.');
+  }
+  const rows = manifest.toString('utf8').split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+  const checksums = {};
+  for (const row of rows) {
+    const [rowVersion, asset, checksum, extra] = row.split(/\s+/);
+    if (rowVersion !== version || extra !== undefined || !/^impeccable-[a-z0-9-]+(?:\.exe)?$/.test(asset) ||
+        !/^[0-9a-f]{64}$/.test(checksum) || Object.hasOwn(checksums, asset)) {
+      fail('Malformed or duplicate engine checksum record.');
+    }
+    checksums[asset] = checksum;
+  }
+  same(Object.entries(checksums).sort(), Object.entries(engine.checksums).sort(), 'Engine checksum records changed; investigate before construction.');
+  same(baseline.files.map(file => file?.path).sort(), runtime.map(file => file.name).sort(), 'Runtime baseline must bind every runtime file exactly once.');
+  for (const expected of baseline.files) {
+    if (typeof expected.sha256 !== 'string') fail('Invalid runtime baseline digest.');
+    digest(expected.sha256);
+    if (hash(files.get(expected.path).bytes) !== expected.sha256) fail(`Runtime bytes changed; investigate before construction: ${expected.path}`);
+  }
+  return { runtimeBaselineSha256: hash(jsonBytes(baseline)), engine };
+}
+
 function validateSkill(skill, policy) {
   const files = new Map(skill.map(file => [file.name, file]));
   if (![policy.requiredSkillFiles, policy.executableFiles, policy.runtimeFiles, policy.runtimeOrigins].every(Array.isArray)) fail('Complete upstream capability enrollment required.');
@@ -114,8 +160,9 @@ function validateSkill(skill, policy) {
   same(runtime.map(file => file.name).sort(), [...policy.runtimeFiles].sort(), 'Upstream runtime-file inventory changed; review capabilities.');
   const origins = [...new Set(runtime.flatMap(file => [...file.bytes.toString('utf8').matchAll(/https?:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?/g)].map(match => match[0])))].sort();
   same(origins, [...policy.runtimeOrigins].sort(), 'Upstream literal runtime origins changed; review capabilities.');
+  const baselineEvidence = validateRuntimeBaseline(runtime, files, policy.runtimeBaseline);
   validateSupportLinks(skill, files);
-  return { executables, runtimeFiles: runtime.map(file => file.name).sort(), literalRuntimeOrigins: origins };
+  return { executables, runtimeFiles: runtime.map(file => file.name).sort(), literalRuntimeOrigins: origins, ...baselineEvidence };
 }
 
 export function buildCandidate(input) {
@@ -124,11 +171,8 @@ export function buildCandidate(input) {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+from\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))?$/.test(version)) fail('Invalid repack version.');
   const numeric = version.split('+')[0];
   if (numeric === pin.version ? version !== pin.version : version !== `${numeric}+from.${pin.version}`) fail('Repack version and upstream provenance disagree.');
-  const { archive, sourceMap, signature } = verifyInputs(input);
-  safePath(policy.skillPrefix, true); safePath(policy.projectHooksPath); safePath(policy.projectSkillPath);
-  if (!policy.skillPrefix.endsWith('/') || policy.projectSkillPath + '/' !== policy.skillPrefix) fail('Unsupported skill layout enrollment.');
+  const { archive, sourceMap, signature, capabilities } = verifyInputs(input);
   const skill = archive.filter(file => file.name.startsWith(policy.skillPrefix)).map(file => ({ ...file, name: file.name.slice(policy.skillPrefix.length) }));
-  const capabilities = validateSkill(skill, policy);
   const projectHooks = JSON.parse(checkedFile(new Map(archive.map(file => [file.name, file])), policy.projectHooksPath).bytes);
   const hooks = transformHooks(projectHooks, policy.projectSkillPath);
   same(hooks, policy.hooks, 'Upstream hooks changed; review integration enrollment.');

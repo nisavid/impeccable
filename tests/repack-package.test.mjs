@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { signBundle, publicKeyHex } from '../scripts/sign-bundle.mjs';
 import { writeZip, readZip } from '../scripts/lib/repack-zip.mjs';
-import { buildCandidate } from '../scripts/lib/repack-package.mjs';
+import { buildCandidate, verifyInputs } from '../scripts/lib/repack-package.mjs';
 import { sha256 } from '../scripts/repack.mjs';
 import { writeCandidate, validateCandidate } from '../scripts/repack.mjs';
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -17,7 +17,7 @@ const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 const file = (name, content, mode = 0o644) => ({ name, bytes: Buffer.isBuffer(content) ? content : Buffer.from(content), mode });
 function fixture(changeSkill = () => {}, runtimeOrigins = []) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n')];
+  const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n'), file('scripts/engine-checksums.txt', '0.1.18 impeccable-linux-x64 ' + 'd'.repeat(64) + '\n')];
   const windows = 'cmd /c if exist ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
   const nativeWindows = 'cmd /c if exist "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
   const launcher = '".codex/skills/impeccable/scripts/impeccable"';
@@ -33,7 +33,24 @@ function fixture(changeSkill = () => {}, runtimeOrigins = []) {
   const sources = [file('LICENSE', 'Apache fixture\n'), file('NOTICE.md', 'Attribution fixture\n'), file('.claude-plugin/plugin.json', json(manifest)), file('scripts/lib/assets/plugin-icon.png', 'icon')];
   const asset = (id, name, bytes) => ({ id, name, size: bytes.length, sha256: sha256(bytes) });
   const pin = { schema: 1, repository: 'pbakaus/impeccable', version: '4.8.0', releaseId: 101, tag: 'skill-v4.8.0', tagObject: 'a'.repeat(40), commit: 'b'.repeat(40), assets: [asset(1, 'universal.zip', universal), asset(2, 'universal.zip.sig.json', signature)], sourceFiles: sources.map(f => ({ name: f.name, sourcePath: f.name, sha256: sha256(f.bytes), mode: f.mode })) };
-  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
+  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/engine-checksums.txt', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
+  policy.runtimeBaseline = {
+    capabilities: {
+      hookExecution: 'Synthetic hook receives JSON stdin.',
+      executableSelection: 'Synthetic launcher or explicit test-engine override.',
+      engineAcquisition: 'Synthetic engine identity with no downloads.',
+      cacheMutation: 'Synthetic temporary workspace only.',
+      networkDestinations: 'No network operations in this fixture.',
+      browserLoopback: 'No browser operations in this fixture.',
+      processAndFilesystemAuthority: 'Local fixture subprocesses and temporary files.',
+    },
+    files: skills.filter(file => policy.runtimeFiles.includes(file.name)).map(file => ({ path: file.name, sha256: sha256(file.bytes) })),
+    engine: {
+      version: skills.find(file => file.name === 'scripts/VERSION').bytes.toString().trim(),
+      checksumManifestSha256: sha256(skills.find(file => file.name === 'scripts/engine-checksums.txt').bytes),
+      checksums: { 'impeccable-linux-x64': 'd'.repeat(64) },
+    },
+  };
   const procedureRevision = 'c'.repeat(40);
   const version = '4.8.1+from.4.8.0';
   const exposureInventory = { complete: true, records: [{ version: '4.8.0' }] };
@@ -145,6 +162,77 @@ test('probes the local engine through the generated POSIX launcher', {
   assert.ok(probe, `Unexpected engine probe response: ${JSON.stringify(stdout)}`);
   assert.equal(sha256(readFileSync(engine)), digest, 'engine bytes changed during probe');
   t.diagnostic(JSON.stringify({ engine, version: probe[1], sha256: digest }));
+});
+
+test('requires a reviewed runtime baseline before candidate construction', () => {
+  const input = fixture();
+  delete input.policy.runtimeBaseline;
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  assert.throws(() => verifyInputs(input), /Complete reviewed runtime baseline required/);
+  assert.throws(() => buildCandidate(input), /Complete reviewed runtime baseline required/);
+});
+
+test('stops changed runtime behavior with the same filenames, modes, and literal origins', () => {
+  const baseline = fixture().policy.runtimeBaseline;
+  const input = fixture(files => {
+    files.find(file => file.name === 'scripts/impeccable').bytes = Buffer.from('#!/bin/sh\nrm -rf "$HOME/fixture-data"\n');
+  });
+  const unchanged = fixture();
+  const checked = verifyInputs(unchanged);
+  assert.equal(checked.capabilities.engine.version, '0.1.18');
+  assert.equal(checked.capabilities.runtimeBaselineSha256, sha256(json(unchanged.policy.runtimeBaseline)));
+  assert.doesNotThrow(() => buildCandidate(unchanged));
+  assert.deepEqual(input.policy.runtimeFiles, unchanged.policy.runtimeFiles);
+  assert.deepEqual(input.policy.executableFiles, unchanged.policy.executableFiles);
+  assert.deepEqual(input.policy.runtimeOrigins, unchanged.policy.runtimeOrigins);
+  input.policy.runtimeBaseline = baseline;
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  assert.throws(() => buildCandidate(input), /Runtime bytes changed; investigate.*scripts\/impeccable/);
+});
+
+test('stops changed engine identity even when runtime-file hashes have been refreshed', () => {
+  const engine = fixture().policy.runtimeBaseline.engine;
+  const input = fixture(files => {
+    files.find(file => file.name === 'scripts/VERSION').bytes = Buffer.from('0.1.19\n');
+    files.find(file => file.name === 'scripts/engine-checksums.txt').bytes = Buffer.from('0.1.19 impeccable-linux-x64 ' + 'e'.repeat(64) + '\n');
+  });
+  input.policy.runtimeBaseline.engine = engine;
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  assert.throws(() => buildCandidate(input), /Engine identity changed; investigate/);
+});
+
+test('requires the exact enrolled engine checksum records', () => {
+  const input = fixture(files => {
+    files.find(file => file.name === 'scripts/engine-checksums.txt').bytes = Buffer.from('0.1.18 impeccable-linux-x64 ' + 'e'.repeat(64) + '\n');
+  });
+  input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+  assert.throws(() => verifyInputs(input), /Engine checksum records changed; investigate/);
+});
+
+test('rejects incomplete runtime baseline and engine policy before creating output', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'impeccable-runtime-policy-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const output = path.join(root, 'candidate');
+  const invalid = [
+    baseline => { delete baseline.files; },
+    baseline => { baseline.files.pop(); },
+    baseline => { baseline.files.push(baseline.files[0]); },
+    baseline => { baseline.files[0].sha256 = ['f'.repeat(64)]; },
+    baseline => { delete baseline.capabilities.hookExecution; },
+    baseline => { baseline.capabilities.networkDestinations = ' '; },
+    baseline => { delete baseline.engine; },
+    baseline => { baseline.engine.version = 'unknown'; },
+    baseline => { delete baseline.engine.checksumManifestSha256; },
+    baseline => { baseline.engine.checksums = {}; },
+    baseline => { baseline.engine.checksums['impeccable-linux-x64'] = ['d'.repeat(64)]; },
+  ];
+  for (const mutate of invalid) {
+    const input = fixture();
+    mutate(input.policy.runtimeBaseline);
+    input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
+    assert.throws(() => writeCandidate(input, output));
+    assert.equal(existsSync(output), false);
+  }
 });
 
 test('rejects corrupt assets, changed input bindings, changed trust and unsupported manifests', () => {
