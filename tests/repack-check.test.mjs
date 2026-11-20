@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -124,3 +124,28 @@ test('CLI check and build both refuse a staged plugin file the enrollment omits'
   assert.equal(readdirSync(root).includes('candidate'), false);
 });
 
+const noSpecialFiles = process.platform === 'win32' ? 'links and FIFOs need a POSIX filesystem' : false;
+
+test('CLI check and build refuse an unpinned link or special file in the staged plugin tree', { skip: noSpecialFiles }, t => {
+  for (const [label, plant, message] of [
+    ['link', root => symlinkSync(path.join(root, 'source/plugin/hooks/hooks.json'), path.join(root, 'source/plugin/agents/linked.md')), 'Supplemental source links are unsupported.'],
+    ['FIFO', root => {
+      const made = spawnSync('mkfifo', [path.join(root, 'source/plugin/agents/fifo.md')]);
+      if (made.error || made.status !== 0) return false;
+    }, 'Supplemental source must be a regular file.'],
+  ]) {
+    const { input, root, put, run, request, checkFile } = inputs(t);
+    if (plant(root) === false) {
+      t.diagnostic(`mkfifo unavailable; ${label} case skipped`);
+      continue;
+    }
+    const failedCheck = run('check', checkFile);
+    assert.equal(failedCheck.status, 1, label);
+    assert.equal(JSON.parse(failedCheck.stderr).error, message, label);
+    put(`reservations/repack-v${input.version}.json`, json(input.reservation));
+    const failedBuild = run('build', put('build.json', json({ ...request, reservation: `reservations/repack-v${input.version}.json` })), path.join(root, 'candidate'));
+    assert.equal(failedBuild.status, 1, label);
+    assert.equal(JSON.parse(failedBuild.stderr).error, message, label);
+    assert.equal(readdirSync(root).includes('candidate'), false, label);
+  }
+});
