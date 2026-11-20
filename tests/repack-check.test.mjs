@@ -22,6 +22,10 @@ const cases = {
   'plugin-only file in neither the archive nor the pins': input => stagePluginFile(input, 'plugin/skills/impeccable/reference/plugin-only.md', 'Plugin only\n'),
   'file in a new area of plugin/': input => stagePluginFile(input, 'plugin/commands/design.md', 'Command\n'),
   'unclassified plugin entry': input => stagePluginFile(input, 'plugin/README.md', 'Readme\n'),
+  'excluded hooks-area file': input => {
+    stagePluginFile(input, 'plugin/hooks/helper.sh', '#!/bin/sh\n');
+    input.policy.claude.excludedSourcePaths = [...input.policy.claude.excludedSourcePaths, 'plugin/hooks/helper.sh'].sort();
+  },
   'stale exclusion': input => { input.pluginListing = input.pluginListing.filter(entry => entry !== 'plugin/.grok-plugin/plugin.json'); },
 };
 
@@ -119,3 +123,4 @@ test('CLI check and build both refuse a staged plugin file the enrollment omits'
   assert.equal(JSON.parse(failedBuild.stderr).error, checkError);
   assert.equal(readdirSync(root).includes('candidate'), false);
 });
+

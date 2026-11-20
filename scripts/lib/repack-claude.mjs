@@ -12,6 +12,7 @@ const PLUGIN_PREFIX = 'plugins/impeccable/';
 const PROJECT_SCRIPTS = '.claude/skills/impeccable/scripts';
 const PLUGIN_LAUNCHER = '${CLAUDE_PLUGIN_ROOT}/skills/impeccable/scripts/impeccable';
 const HOOKS_SOURCE = 'plugin/hooks/hooks.json';
+const HOOKS_SOURCE_PREFIX = 'plugin/hooks/';
 const SKILL_SOURCE_PREFIX = 'plugin/skills/impeccable/';
 const AGENT_SOURCE_PREFIX = 'plugin/agents/';
 
@@ -29,7 +30,7 @@ function requireEnrollment(claude) {
   same(claude.excludedSourcePaths, [...new Set(claude.excludedSourcePaths)].sort(), 'Claude exclusions must be sorted and unique.');
   for (const excluded of claude.excludedSourcePaths) {
     safePath(excluded);
-    if (!excluded.startsWith('plugin/') || excluded === HOOKS_SOURCE || excluded.startsWith(AGENT_SOURCE_PREFIX) || excluded.startsWith(SKILL_SOURCE_PREFIX)) {
+    if (!excluded.startsWith('plugin/') || excluded.startsWith(HOOKS_SOURCE_PREFIX) || excluded.startsWith(AGENT_SOURCE_PREFIX) || excluded.startsWith(SKILL_SOURCE_PREFIX)) {
       fail(`Claude exclusion must name a plugin file outside the skill, agents, and hooks: ${excluded}`);
     }
   }

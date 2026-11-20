@@ -173,7 +173,7 @@ test('fails closed on changed, missing, malformed, or unsafe Claude inputs', () 
   const staleExclusion = fixture();
   staleExclusion.pluginListing = staleExclusion.pluginListing.filter(entry => entry !== 'plugin/.claude-plugin/plugin.json');
   rejects(staleExclusion, /Enrolled plugin path is missing from the staged plugin tree: plugin\/\.claude-plugin\/plugin\.json/);
-  for (const excluded of ['plugin/hooks/hooks.json', 'plugin/agents/x.md', 'plugin/skills/impeccable/x.md', 'other/x.json']) {
+  for (const excluded of ['plugin/hooks/hooks.json', 'plugin/hooks/helper.sh', 'plugin/agents/x.md', 'plugin/skills/impeccable/x.md', 'other/x.json']) {
     const input = fixture();
     input.policy.claude.excludedSourcePaths = [excluded, ...input.policy.claude.excludedSourcePaths].sort();
     rejects(rebind(input), /Claude exclusion must name a plugin file outside the skill, agents, and hooks/);
