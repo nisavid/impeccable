@@ -34,6 +34,7 @@ export const SUITES = {
       /^crates\/context\/assets\/component-review\.js$/,
       ...COMMON_INFRA_PATTERNS,
       /^scripts\/(?!build-extension)/,
+      /^tests\/lib\/repack-fixture\.mjs$/,
       /^skill\/(SKILL\.src\.md|agents\/|reference\/|scripts\/|hermes-plugin\/)/,
       /^ENGINE_VERSION$/,
       /^README(\.npm)?\.md$/,
