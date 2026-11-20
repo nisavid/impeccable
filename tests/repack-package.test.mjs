@@ -476,12 +476,15 @@ test('validates retained bytes, rejects mismatched package versions, and preserv
 test('public provenance retains exposure versions and hashes without private account records', () => {
   const input = fixture();
   input.reservation.exposureInventory.records[0].account = 'private account fixture';
+  // An exposure version distinct from the upstream 4.8.0, which the record also names.
+  input.reservation.exposureInventory.records.push({ version: '4.7.3+from.4.7.2' });
   input.reservation.exposureInventorySha256 = sha256(json(input.reservation.exposureInventory));
   const candidate = buildCandidate(input);
   const provenance = readZip(candidate.archive).find(file => file.name === 'RELEASE.json').bytes.toString();
   assert.doesNotMatch(provenance, /private account fixture/);
-  assert.match(provenance, /exposureInventorySha256/);
-  assert.match(provenance, /4\.8\.0/);
+  const { allocation } = JSON.parse(provenance);
+  assert.deepEqual(allocation.exposedVersions, ['4.7.3+from.4.7.2', '4.8.0']);
+  assert.equal(allocation.exposureInventorySha256, input.reservation.exposureInventorySha256);
 });
 
 function cliFixture(t, { input = fixture(), umask = 0o022 } = {}) {
