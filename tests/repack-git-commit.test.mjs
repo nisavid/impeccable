@@ -176,10 +176,20 @@ test('refuses repositories and requests outside the controlled conditions', { sk
       assert.notEqual(fenced([`--git-dir=${options.repository}`, 'rev-parse', '--verify', '--quiet', options.ref ?? base.ref]).status, 0, 'no ref is written');
     }
   };
-  refuses({ repository: store(config('core.hooksPath', '/tmp')) }, /must not define hooks, filters, or signing: core\.hookspath/);
+  refuses({ repository: store(config('core.hooksPath', '/tmp')) }, /must not define hooks, filters, signing, or a commit encoding: core\.hookspath/);
   refuses({ repository: store(config('filter.lfs.clean', 'cat')) }, /filter\.lfs\.clean/);
   refuses({ repository: store(config('user.signingKey', 'KEY')) }, /user\.signingkey/);
   refuses({ repository: store(config('gpg.program', '/bin/false')) }, /gpg\.program/);
+  const encoded = store(config('i18n.commitEncoding', 'ISO-8859-1'));
+  refuses({ repository: encoded }, /must not define hooks, filters, signing, or a commit encoding: i18n\.commitencoding/);
+  assert.equal(fenced([`--git-dir=${encoded}`, 'count-objects']).stdout, '0 objects, 0 kilobytes\n', 'no object is written');
+  // Control: the key is live and adds an `encoding` header the expected commit does not carry.
+  const emptyTree = fenced([`--git-dir=${encoded}`, 'mktree'], { input: '' }).stdout.trim();
+  const encodedCommit = fenced([`--git-dir=${encoded}`, 'commit-tree', '--no-gpg-sign', emptyTree], { input: message, env: {
+    GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_AUTHOR_DATE: `@${author.date}`,
+    GIT_COMMITTER_NAME: committer.name, GIT_COMMITTER_EMAIL: committer.email, GIT_COMMITTER_DATE: `@${committer.date}`,
+  } }).stdout.trim();
+  assert.match(fenced([`--git-dir=${encoded}`, 'cat-file', 'commit', encodedCommit]).stdout, /^encoding ISO-8859-1$/m);
   refuses({ repository: store(repository => {
     mkdirSync(path.join(repository, 'objects/info'), { recursive: true });
     writeFileSync(path.join(repository, 'objects/info/alternates'), `${root}\n`);
@@ -271,7 +281,7 @@ test('refuses configuration-defined hooks before writing any object', { skip }, 
   for (const [repository, name] of [[direct, 'evil'], [included, 'inc']]) {
     assert.throws(
       () => commitSnapshot({ git: GIT, repository, hooksDirectory: hooks, objectFormat: 'sha1', ref: 'refs/heads/snapshot', files, author, committer, message }),
-      new RegExp(`must not define hooks, filters, or signing: hook\\.${name}\\.command`),
+      new RegExp(`must not define hooks, filters, signing, or a commit encoding: hook\\.${name}\\.command`),
     );
     assert.equal(fenced([`--git-dir=${repository}`, 'count-objects']).stdout, '0 objects, 0 kilobytes\n', 'no object is written');
   }

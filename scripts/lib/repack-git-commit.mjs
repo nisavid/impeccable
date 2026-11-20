@@ -109,10 +109,12 @@ function configKeys(context) {
     .map(line => line.split('\t')).filter(([scope]) => scope !== 'command').map(([, key]) => key.toLowerCase());
 }
 
+// A non-UTF-8 commit encoding makes commit-tree add an `encoding` header that
+// the expected commit does not carry, so it is refused with the other keys.
 export function preflight(context, { ref }) {
   const forbidden = configKeys(context).filter(key => key === 'core.hookspath' || key.startsWith('hook.') || key.startsWith('filter.') ||
-    key === 'user.signingkey' || key.startsWith('gpg.') || key === 'commit.gpgsign');
-  if (forbidden.length) fail(`Repository configuration must not define hooks, filters, or signing: ${[...new Set(forbidden)].join(', ')}`);
+    key === 'user.signingkey' || key.startsWith('gpg.') || key === 'commit.gpgsign' || key === 'i18n.commitencoding');
+  if (forbidden.length) fail(`Repository configuration must not define hooks, filters, signing, or a commit encoding: ${[...new Set(forbidden)].join(', ')}`);
   const format = text(repo(context, ['rev-parse', '--show-object-format']));
   if (format !== context.objectFormat) fail(`Repository object format is ${format}, expected ${context.objectFormat}.`);
   for (const name of ['objects/info/alternates', 'objects/info/http-alternates']) {
