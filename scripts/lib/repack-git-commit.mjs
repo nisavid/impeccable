@@ -26,8 +26,15 @@ export function requireEmptyDirectory(directory, label) {
   if (!info?.isDirectory() || readdirSync(directory).length) fail(`${label} must be an existing empty directory.`);
 }
 
+// The empty hooks path stops hooks-directory hooks. Disabling the
+// reference-transaction event also stops a configuration-defined hook for it;
+// preflight refuses every `hook.*` key, so this is defense in depth.
+export function gitArguments(context, args) {
+  return ['-c', `core.hooksPath=${context.hooksDirectory}`, '-c', 'hook.reference-transaction.enabled=false', ...args];
+}
+
 function git(context, args, { input, env = {}, allow = [0] } = {}) {
-  const result = spawnSync(context.git, ['-c', `core.hooksPath=${context.hooksDirectory}`, ...args], {
+  const result = spawnSync(context.git, gitArguments(context, args), {
     cwd: '/', env: fencedEnvironment(env), input, maxBuffer: 512 * 1024 * 1024,
   });
   if (result.error) throw result.error;
@@ -103,7 +110,7 @@ function configKeys(context) {
 }
 
 export function preflight(context, { ref }) {
-  const forbidden = configKeys(context).filter(key => key === 'core.hookspath' || key.startsWith('filter.') ||
+  const forbidden = configKeys(context).filter(key => key === 'core.hookspath' || key.startsWith('hook.') || key.startsWith('filter.') ||
     key === 'user.signingkey' || key.startsWith('gpg.') || key === 'commit.gpgsign');
   if (forbidden.length) fail(`Repository configuration must not define hooks, filters, or signing: ${[...new Set(forbidden)].join(', ')}`);
   const format = text(repo(context, ['rev-parse', '--show-object-format']));

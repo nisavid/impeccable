@@ -195,10 +195,10 @@ File-write failures can leave an incomplete new output directory; preserve it as
 }
 ```
 
-`buildRequest` and `output` resolve from the request file's directory; `git`, `repository`, and `hooksDirectory` must be normalized absolute paths. Every Git command runs with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_TERMINAL_PROMPT=0` in its environment, plus the explicit identity for the commit and ref commands. It names the repository with `--git-dir`, runs from `/`, and carries `-c core.hooksPath=<hooksDirectory>`. The step:
+`buildRequest` and `output` resolve from the request file's directory; `git`, `repository`, and `hooksDirectory` must be normalized absolute paths. Every Git command runs with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_TERMINAL_PROMPT=0` in its environment, plus the explicit identity for the commit and ref commands. It names the repository with `--git-dir`, runs from `/`, and carries `-c core.hooksPath=<hooksDirectory>` and `-c hook.reference-transaction.enabled=false`. The step:
 
 1. Checks that the hooks directory is empty and the branch name is valid. With `createRepository`, it requires an absent path under an existing parent, runs `init --bare --template= --object-format=<format>`, and asserts minimal configuration and an absent or empty hooks directory.
-2. Rejects repository configuration that defines `core.hooksPath`, `filter.*`, `user.signingKey`, `gpg.*`, or `commit.gpgSign`; a different object format; `objects/info/alternates` or `http-alternates`; a branch checked out in any worktree; and an existing branch.
+2. Before writing any object, rejects repository configuration in any scope except the command line, including included files, that defines `core.hooksPath`, any `hook.*` key (a configuration-defined hook runs even under an empty hooks path), `filter.*`, `user.signingKey`, `gpg.*`, or `commit.gpgSign`; a different object format; `objects/info/alternates` or `http-alternates`; a branch checked out in any worktree; and an existing branch.
 3. Writes blobs with `hash-object -w --no-filters --stdin`, trees with `mktree -z`, the commit with `commit-tree --no-gpg-sign`, and the branch with `update-ref --no-deref <branch> <commit> <zero-id>`. Each object ID must match the one computed from the validated bytes beforehand.
 4. Reads the branch, the commit object, the recursive tree listing, and every blob back, and compares them with the validated tree.
 

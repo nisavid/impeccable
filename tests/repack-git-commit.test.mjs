@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { expectedSnapshot, fencedEnvironment, commitSnapshot } from '../scripts/lib/repack-git-commit.mjs';
+import { expectedSnapshot, fencedEnvironment, commitSnapshot, gitArguments } from '../scripts/lib/repack-git-commit.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { writeCandidate } from '../scripts/repack.mjs';
 import { fixture, json } from './lib/repack-fixture.mjs';
@@ -234,4 +234,47 @@ test('validates the retained candidate before writing any object', { skip }, t =
   assert.equal(result.status, 1);
   assert.match(JSON.parse(result.stderr).error, /Candidate bytes or mode mismatch: claude-marketplace\/plugins\/impeccable\/hooks\/hooks\.json/);
   assert.equal(existsSync(request.repository), false);
+});
+
+test('refuses configuration-defined hooks before writing any object', { skip }, t => {
+  const { root, hooks } = scratch(t);
+  const log = path.join(root, 'hook.log');
+  const script = path.join(root, 'config-hook');
+  writeFileSync(script, `#!/bin/sh\necho "$*" >> "${log}"\n`, { mode: 0o755 });
+  const init = name => {
+    const repository = path.join(root, name);
+    assert.equal(fenced(['init', '-q', '--bare', '--template=', '--object-format=sha1', repository]).status, 0);
+    return repository;
+  };
+  const config = (repository, key, value) => assert.equal(fenced([`--git-dir=${repository}`, 'config', key, value]).status, 0);
+  const direct = init('direct.git');
+  config(direct, 'hook.evil.command', script);
+  config(direct, 'hook.evil.event', 'reference-transaction');
+  const included = init('included.git');
+  const include = path.join(root, 'hooks.cfg');
+  writeFileSync(include, `[hook "inc"]\n\tcommand = ${script}\n\tevent = reference-transaction\n`);
+  config(included, 'include.path', include);
+  const files = candidateTree();
+  for (const [repository, name] of [[direct, 'evil'], [included, 'inc']]) {
+    assert.throws(
+      () => commitSnapshot({ git: GIT, repository, hooksDirectory: hooks, objectFormat: 'sha1', ref: 'refs/heads/snapshot', files, author, committer, message }),
+      new RegExp(`must not define hooks, filters, or signing: hook\\.${name}\\.command`),
+    );
+    assert.equal(fenced([`--git-dir=${repository}`, 'count-objects']).stdout, '0 objects, 0 kilobytes\n', 'no object is written');
+  }
+  assert.equal(existsSync(log), false);
+
+  // Control: the planted hook is live. An empty hooks path alone does not stop it.
+  const tree = fenced([`--git-dir=${direct}`, 'mktree'], { input: '' }).stdout.trim();
+  const identity = { GIT_AUTHOR_NAME: 'A', GIT_AUTHOR_EMAIL: 'a@example.invalid', GIT_AUTHOR_DATE: '@1700000000 +0000', GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@example.invalid', GIT_COMMITTER_DATE: '@1700000000 +0000' };
+  const commit = fenced([`--git-dir=${direct}`, 'commit-tree', '--no-gpg-sign', tree], { input: 'msg\n', env: identity }).stdout.trim();
+  assert.equal(existsSync(log), false, 'object writes run no hook');
+  const live = fenced(['-c', `core.hooksPath=${hooks}`, `--git-dir=${direct}`, 'update-ref', 'refs/heads/control', commit, '0'.repeat(40)]);
+  assert.equal(live.status, 0, live.stderr);
+  const fired = readFileSync(log, 'utf8');
+  assert.match(fired, /committed/);
+  // Defense in depth: the step's own arguments also disable the event.
+  const defended = spawnSync(GIT, gitArguments({ hooksDirectory: hooks }, [`--git-dir=${direct}`, 'update-ref', 'refs/heads/defended', commit, '0'.repeat(40)]), { cwd: '/', encoding: 'utf8', env: fencedEnvironment() });
+  assert.equal(defended.status, 0, defended.stderr);
+  assert.equal(readFileSync(log, 'utf8'), fired);
 });
