@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { signBundle, publicKeyHex } from '../scripts/sign-bundle.mjs';
-import { writeZip, readZip } from '../scripts/lib/repack-zip.mjs';
+import { publicKeyHex } from '../scripts/sign-bundle.mjs';
+import { readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate, verifyInputs } from '../scripts/lib/repack-package.mjs';
 import { sha256 } from '../scripts/repack.mjs';
 import { writeCandidate, validateCandidate } from '../scripts/repack.mjs';
@@ -12,51 +12,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ENGINE_MISSING_MESSAGE, findEngineBinary } from './lib/engine-bin.mjs';
-
-const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
-const file = (name, content, mode = 0o644) => ({ name, bytes: Buffer.isBuffer(content) ? content : Buffer.from(content), mode });
-function fixture(changeSkill = () => {}, runtimeOrigins = []) {
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n'), file('scripts/engine-checksums.txt', '0.1.18 impeccable-linux-x64 ' + 'd'.repeat(64) + '\n')];
-  const windows = 'cmd /c if exist ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
-  const nativeWindows = 'cmd /c if exist "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
-  const launcher = '".codex/skills/impeccable/scripts/impeccable"';
-  const command = `[ ! -f ${launcher} ] || ${launcher} hook`;
-  const projectHooks = { hooks: { PostToolUse: [{ matcher: 'Edit|Write|apply_patch', hooks: [{ type: 'command', command, commandWindows: windows, timeout: 5, statusMessage: 'Checking UI changes' }] }], Stop: [{ hooks: [{ type: 'command', command, commandWindows: windows, timeout: 30, statusMessage: 'Design deep pass' }] }] } };
-  const hooks = JSON.parse(JSON.stringify(projectHooks).replaceAll('.codex/skills/impeccable', '${PLUGIN_ROOT}/skills/impeccable'));
-  hooks.hooks.PostToolUse[0].hooks[0].commandWindows = nativeWindows;
-  hooks.hooks.Stop[0].hooks[0].commandWindows = nativeWindows;
-  const manifest = { name: 'impeccable', version: '4.8.0', description: 'Design', author: { name: 'Upstream author' }, homepage: 'https://impeccable.style', repository: 'https://github.com/pbakaus/impeccable', skills: './.claude/skills/' };
-  changeSkill(skills);
-  const universal = writeZip([...skills.map(f => ({ ...f, name: `.codex/skills/impeccable/${f.name}` })), file('.codex/hooks.json', json(projectHooks))]);
-  const signature = json(signBundle(universal, '4.8.0', privateKey, { enrolled: publicKeyHex(publicKey) }));
-  const sources = [file('LICENSE', 'Apache fixture\n'), file('NOTICE.md', 'Attribution fixture\n'), file('.claude-plugin/plugin.json', json(manifest)), file('scripts/lib/assets/plugin-icon.png', 'icon')];
-  const asset = (id, name, bytes) => ({ id, name, size: bytes.length, sha256: sha256(bytes) });
-  const pin = { schema: 1, repository: 'pbakaus/impeccable', version: '4.8.0', releaseId: 101, tag: 'skill-v4.8.0', tagObject: 'a'.repeat(40), commit: 'b'.repeat(40), assets: [asset(1, 'universal.zip', universal), asset(2, 'universal.zip.sig.json', signature)], sourceFiles: sources.map(f => ({ name: f.name, sourcePath: f.name, sha256: sha256(f.bytes), mode: f.mode })) };
-  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/engine-checksums.txt', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
-  policy.runtimeBaseline = {
-    capabilities: {
-      hookExecution: 'Synthetic hook receives JSON stdin.',
-      executableSelection: 'Synthetic launcher or explicit test-engine override.',
-      engineAcquisition: 'Synthetic engine identity with no downloads.',
-      cacheMutation: 'Synthetic temporary workspace only.',
-      networkDestinations: 'No network operations in this fixture.',
-      browserLoopback: 'No browser operations in this fixture.',
-      processAndFilesystemAuthority: 'Local fixture subprocesses and temporary files.',
-    },
-    files: skills.filter(file => policy.runtimeFiles.includes(file.name)).map(file => ({ path: file.name, sha256: sha256(file.bytes) })),
-    engine: {
-      version: skills.find(file => file.name === 'scripts/VERSION').bytes.toString().trim(),
-      checksumManifestSha256: sha256(skills.find(file => file.name === 'scripts/engine-checksums.txt').bytes),
-      checksums: { 'impeccable-linux-x64': 'd'.repeat(64) },
-    },
-  };
-  const procedureRevision = 'c'.repeat(40);
-  const version = '4.8.1+from.4.8.0';
-  const exposureInventory = { complete: true, records: [{ version: '4.8.0' }] };
-  const reservation = { schema: 1, version, upstream: pin.version, binding: { procedureRevision, inputsSha256: sha256(json({ pin, policy })) }, advance: false, exposureInventory, exposureInventorySha256: sha256(json(exposureInventory)) };
-  return { universal, signature, sources, pin, policy, version, procedureRevision, reservation };
-}
+import { fixture, file, json } from './lib/repack-fixture.mjs';
 
 test('builds byte-identical portable and marketplace payloads preserving upstream files and hooks', () => {
   const input = fixture();
@@ -528,7 +484,7 @@ function cliFixture(t, { input = fixture(), umask = 0o022 } = {}) {
     put('signature.json', input.signature);
     put('pin.json', json(input.pin));
     put('policy.json', json(input.policy));
-    for (const file of input.sources) put(`source/${file.name}`, file.bytes);
+    for (const file of [...input.sources, ...input.claudeSources]) put(`source/${file.name}`, file.bytes);
   });
 
   const command = fileURLToPath(new URL('../scripts/repack.mjs', import.meta.url));

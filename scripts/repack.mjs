@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildCandidate, jsonBytes } from './lib/repack-package.mjs';
 import { safePath } from './lib/repack-zip.mjs';
+import { CLAUDE_MARKETPLACE_DIRECTORY } from './lib/repack-claude.mjs';
 
 export { allocateVersion, selectRelease } from './lib/repack-version.mjs';
 import { allocateVersion, requireExposureInventory, selectRelease } from './lib/repack-version.mjs';
@@ -76,6 +77,20 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
   return reservation;
 }
 
+function readSupplemental(sourceRoot, sourcePath) {
+  safePath(sourcePath);
+  let current = sourceRoot;
+  let info;
+  for (const part of sourcePath.split('/')) {
+    current = path.join(current, part);
+    info = lstatSync(current, { throwIfNoEntry: false });
+    if (!info) throw new Error(`Missing pinned supplemental source: ${sourcePath}`);
+    if (info.isSymbolicLink()) throw new Error('Supplemental source links are unsupported.');
+  }
+  if (!info.isFile()) throw new Error('Supplemental source must be a regular file.');
+  return { bytes: readFileSync(current), mode: info.mode & 0o100 ? 0o755 : 0o644 };
+}
+
 const readJson = filename => JSON.parse(readFileSync(filename, 'utf8'));
 export function loadBuildRequest(filename) {
   const request = readJson(filename);
@@ -90,21 +105,12 @@ export function loadBuildRequest(filename) {
   }
   const sourceRoot = resolve(request.sourceRoot);
   if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
-  const sources = pin.sourceFiles.map(expected => {
-    safePath(expected.sourcePath);
-    let current = sourceRoot;
-    let info;
-    for (const part of expected.sourcePath.split('/')) {
-      current = path.join(current, part);
-      info = lstatSync(current, { throwIfNoEntry: false });
-      if (!info) throw new Error(`Missing pinned supplemental source: ${expected.sourcePath}`);
-      if (info.isSymbolicLink()) throw new Error('Supplemental source links are unsupported.');
-    }
-    if (!info.isFile()) throw new Error('Supplemental source must be a regular file.');
-    const mode = info.mode & 0o100 ? 0o755 : 0o644;
-    return { name: expected.name, bytes: readFileSync(current), mode };
-  });
-  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, reservation, version: reservation.version, procedureRevision };
+  const sources = pin.sourceFiles.map(expected => ({ name: expected.name, ...readSupplemental(sourceRoot, expected.sourcePath) }));
+  // Claude sources are staged under the same root at their pinned Git paths.
+  const claudeSources = Array.isArray(policy.claude?.sourceFiles)
+    ? policy.claude.sourceFiles.map(expected => ({ name: expected?.path, ...readSupplemental(sourceRoot, expected?.path) }))
+    : [];
+  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, claudeSources, reservation, version: reservation.version, procedureRevision };
 }
 
 function outputFiles(result) {
@@ -113,6 +119,7 @@ function outputFiles(result) {
     { name: 'candidate.json', bytes: jsonBytes(result.candidate), mode: 0o644 },
     { name: 'marketplace/.agents/plugins/marketplace.json', bytes: jsonBytes(result.catalog), mode: 0o644 },
     ...result.payload.map(file => ({ ...file, name: `marketplace/plugins/impeccable/${file.name}` })),
+    ...(result.claude?.files ?? []).map(file => ({ ...file, name: `${CLAUDE_MARKETPLACE_DIRECTORY}/${file.name}` })),
   ];
 }
 
