@@ -128,9 +128,6 @@ function validateSkill(skill, policy) {
 export function buildCandidate(input) {
   const { pin, policy, version, procedureRevision, reservation } = input;
   if (reservation?.schema !== 1 || reservation.upstream !== pin.version || reservation.version !== version || reservation.binding?.procedureRevision !== procedureRevision || reservation.binding.inputsSha256 !== hash(jsonBytes({ pin, policy })) || reservation.exposureInventorySha256 !== hash(jsonBytes(reservation.exposureInventory)) || allocateVersion(pin.version, reservation.exposureInventory, { advance: reservation.advance }) !== version) fail('Reservation does not bind this allocation, procedure, and input identity.');
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+from\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))?$/.test(version)) fail('Invalid repack version.');
-  const numeric = version.split('+')[0];
-  if (numeric === pin.version ? version !== pin.version : version !== `${numeric}+from.${pin.version}`) fail('Repack version and upstream provenance disagree.');
   const { archive, sourceMap, claudeSourceMap, skill, signature, capabilities } = verifyInputs(input);
   const projectHooks = JSON.parse(checkedFile(new Map(archive.map(file => [file.name, file])), policy.projectHooksPath).bytes);
   const hooks = transformHooks(projectHooks, policy.projectSkillPath);
