@@ -1,12 +1,12 @@
 # Build an Impeccable repack candidate
 
-`scripts/repack.mjs` reserves a version, builds a portable plugin archive and matching marketplace tree, and validates the retained bytes. It performs no network requests, release uploads, tag writes, or marketplace promotion. Use it from the independently reviewed procedure revision under the [acceptance plan](repack-acceptance-plan.md). A candidate remains unqualified until that plan's runtime and consumer observations pass.
+`scripts/repack.mjs` reserves a version, builds a portable plugin archive and matching marketplace tree, optionally builds a Claude Code plugin tree and Claude marketplace catalog beside them, validates the retained bytes, and can commit the Claude marketplace tree to a local Git store. It performs no network requests, release uploads, remote ref or tag writes, or marketplace promotion. Use it from the independently reviewed procedure revision under the [acceptance plan](repack-acceptance-plan.md). A candidate remains unqualified until that plan's runtime and consumer observations pass.
 
 ## Invoke the offline CLI
 
-Pass a request filename to `select`, `allocate`, or `reserve`. Pass a build request filename and output directory to `build` or `validate`. Relative command-line paths and the `directory` field in a reservation request resolve from the process working directory. Relative paths inside a build request resolve from that file's directory.
+Pass a request filename to `select`, `allocate`, `reserve`, or `commit`. Pass a build request filename and output directory to `build` or `validate`. Relative command-line paths and the `directory` field in a reservation request resolve from the process working directory. Relative paths inside a build request resolve from that file's directory.
 
-- Exit `0` writes one JSON line to stdout. Require the expected `outcome` before continuing. The commands return `{outcome: "selected", release}`, `{outcome: "allocated-preview", version}`, `{outcome: "reserved", reservation}`, `{outcome: "candidate", candidate}`, or `{outcome: "validated", candidate}`, respectively.
+- Exit `0` writes one JSON line to stdout. Require the expected `outcome` before continuing. The commands return `{outcome: "selected", release}`, `{outcome: "allocated-preview", version}`, `{outcome: "reserved", reservation}`, `{outcome: "candidate", candidate}`, `{outcome: "validated", candidate}`, or `{outcome: "committed", commit}`, respectively.
 - Exit `1` writes one JSON line to stderr with `outcome: "failed"`, an `error` message, and `lockCleanup` when reservation lock cleanup fails. The CLI supplies no general machine-readable error category.
 - Exit `2` writes a plain-text `Usage:` line to stderr before reading a request.
 
@@ -23,6 +23,7 @@ Reconcile the selected release ID, tag object, and peeled commit before and afte
 - `.claude-plugin/plugin.json`
 - `LICENSE` and the complete enrolled notice inventory
 - `scripts/lib/assets/plugin-icon.png`
+- every Claude source enrolled in `policy.claude.sourceFiles` (see below)
 
 The archive's Ed25519 signature authenticates its version, artifact name, size, and digest. It does not cover the supplemental source files or authenticate their publisher independently. Preserve source-fetch and tag reconciliation evidence separately. An unsigned tag and a commit-pinned hash identify source inputs; they do not supply another signing trust root.
 
@@ -83,6 +84,23 @@ The builder copies the complete signed Codex skill subtree byte for byte, preser
 
 The portable root uses the [Agent Plugins 1.0.0 schema](https://agent-plugins.org/schemas/1.0.0/plugin.schema.json). Its complete `extensions.com.openai` overlay equals `.codex-plugin/plugin.json`, following the [OpenAI overlay contract](https://developers.openai.com/plugins/build/plugins#add-an-openai-and-codex-overlay). Both manifests retain selected upstream authorship, description, and homepage, identify the fork repository, and carry one allocated version. If the upstream manifest supplies `license`, it must match the enrolled identifier. If it supplies `keywords`, the field must be an array of strings. Wrapper metadata supplies display name Impeccable, icon paths, `skills: "./skills/"`, and explicit `hooks: "./hooks/hooks.json"`. The [marketplace catalog](https://developers.openai.com/plugins/build/plugins#marketplace-metadata) uses the local source object pointing to `./plugins/impeccable`, category Creativity, and the standard AVAILABLE/ON_INSTALL policy. Upstream skill metadata is unchanged. `RELEASE.json` records each transformation and every copied path, hash, and mode.
 
+## Enroll the Claude surface
+
+Add a `claude` object to the reviewed policy only for a Claude delivery. Without it, the build emits no Claude output. [ADR 0003](adr/0003-claude-desktop-local-route.md) records the route and why each source is used.
+
+| Field | Enrolled value |
+| --- | --- |
+| `skillPrefix` | `.claude/skills/impeccable/` |
+| `agentsPrefix` | `.claude/agents/` |
+| `projectHooksPath` | `.claude/settings.json` |
+| `hooks` | Complete expected Claude plugin hook object, equal to upstream `plugin/hooks/hooks.json` |
+| `agents` | Sorted file names of every agent under `agentsPrefix` in the signed archive |
+| `sourceFiles` | Every source-commit file the Claude tree uses, each with `path`, `mode`, and `sha256` |
+
+Supported `sourceFiles` paths are `plugin/hooks/hooks.json` (required), `plugin/agents/<name>.md` for an enrolled agent, and `plugin/skills/impeccable/<path>.md` for a markdown file present in the signed Claude skill subtree. Each must be a regular `0644` file. Stage them under `sourceRoot` at those paths and compare them with the selected commit's Git blobs, as for the other supplemental files.
+
+The builder copies the signed Claude skill subtree and requires its runtime and executable files to equal the enrolled Codex runtime byte for byte and mode for mode. Enrolled sources replace only the listed markdown and agents. The hooks must equal `policy.claude.hooks`, keep upstream's Claude event set from `projectHooksPath`, and root every command at `${CLAUDE_PLUGIN_ROOT}`. No packaged markdown may name `.claude/skills/impeccable/scripts`. Agents must equal the enrolled list. The Claude manifest keeps upstream authorship, description, and homepage, names the fork repository and the allocated version, carries the enrolled license and keywords only when upstream supplies them, and points `skills` at `./skills/`. The catalog `nisavid-impeccable` lists the plugin at `./plugins/impeccable` with the same version. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
+
 ## Reserve one version
 
 Collect the complete exposure inventory, including candidate tags, public releases, private/account deliveries, and withdrawn or failed candidates. Retain the collecting evidence. Pass `{complete: true, records: [{version, ...}]}` as `inventory`. Supply `records: []` for a verified empty inventory. Uncertainty prevents setting `complete: true`.
@@ -107,6 +125,8 @@ Inspect the reservation directory, checking `lockCleanup.reservation` when avail
 
 The local lock serializes users of the same directory. Hosted release attempts must additionally serialize their entire reconcile/reserve/publish sequence and establish the create-only immutable remote candidate tag before any consumer exposure. Before allocation, copy the exact bytes written by `reserve` for every durable reservation record into the local directory. Reformatting or reordering JSON can change the file's SHA-256 even when the parsed values are identical. A local reservation alone establishes neither remote uniqueness nor exposure-inventory completeness. Retain failed reservations permanently.
 
+A local Claude Desktop delivery has no hosted tag. Its exposure starts at the first resolve of the snapshot by any client configuration, including an isolated one. Before that resolve, reserve the version, retain the candidate record, commit the marketplace snapshot locally with `commit` and give consumers its full SHA, and enter the delivery in the exposure inventory as a private delivery. A hosted tag stays required before any hosted exposure.
+
 ## Build twice and validate
 
 Create `build-request.json` with `procedureRevision` and paths `universal`, `signature`, `pin`, `policy`, `reservation`, and `sourceRoot`. Stage the selected supplemental files at their original paths under `sourceRoot`. The loader reads the pin-listed paths and requires a directory root and regular files without symbolic links beneath it.
@@ -125,6 +145,7 @@ Each build requires a new output directory under an existing parent. It writes t
 - `candidate.json`, with input identities, hashes, modes, structural checks, and explicit qualification limits
 - `marketplace/.agents/plugins/marketplace.json`
 - `marketplace/plugins/impeccable/`, byte- and mode-identical to the portable package
+- with Claude enrolled, `claude-marketplace/.claude-plugin/marketplace.json` and the Claude plugin under `claude-marketplace/plugins/impeccable/`; `candidate.json` gains a `claude` record with the catalog name, plugin name, version, digests, and the full tree inventory
 
 Compare both archives and both `candidate.json` files byte for byte across the independent processes. Retain the inputs, enrolled policy, reservation, source comparison, procedure revision and its verification evidence, output hashes, and both results. On resumption, reconcile the retained bytes with the same reservation before continuing. A procedure mismatch or retained-byte disagreement stops the attempt. `validate` reconstructs the expected result and checks all retained output paths, bytes, and modes, including the archive, manifests, provenance, catalog, and marketplace tree. It checks the directories implied by the expected file paths and rejects extra entries and links. It compares regular-file permissions and special mode bits. Validation does not overwrite output or consult a moving qualified ref.
 
@@ -144,8 +165,43 @@ Run the generated-package runtime fixture with:
 node --test --test-name-pattern='generated POSIX launcher' tests/repack-package.test.mjs
 ```
 
-The fixture runs the POSIX launcher and both relocated hook commands from a separate project with a synthetic engine. It checks argument and event-payload forwarding and the hook guards when the plugin root is absent. If the test runner finds a local engine through `IMPECCABLE_BIN` or the standard test binary paths, a separate probe through the generated launcher reports its path, version, and SHA-256. Otherwise the probe reports a skip. Qualification still requires runtime observations on the selected candidate and on each consumer route. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
+The fixture runs the POSIX launcher and both relocated hook commands from a separate project with a synthetic engine. It checks argument and event-payload forwarding and the hook guards when the plugin root is absent. The Claude hook fixture does the same for each Claude hook command, with `CLAUDE_PLUGIN_ROOT` set to the generated plugin and to a missing directory:
+
+```sh
+node --test --test-name-pattern='Claude hook command' tests/repack-claude.test.mjs
+```
+
+If the test runner finds a local engine through `IMPECCABLE_BIN` or the standard test binary paths, a separate probe through the generated launcher reports its path, version, and SHA-256. Otherwise the probe reports a skip. Qualification still requires runtime observations on the selected candidate and on each consumer route. The publisher records the generated distribution commit separately, avoiding a self-referential commit field inside its own payload.
 
 File-write failures can leave an incomplete new output directory; preserve it as failure evidence and use a new directory after reconciliation. Existing output directories are never reused by `build`.
 
-Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs` after changing the allocator, builder, ZIP reader, or this procedure. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.
+## Commit the Claude marketplace snapshot
+
+`commit` validates a retained candidate, then writes its `claude-marketplace/` tree as one root commit on a new branch. Create `commit-request.json`:
+
+```json
+{
+  "buildRequest": "build-request.json",
+  "output": "first",
+  "git": "/usr/bin/git",
+  "repository": "/absolute/path/to/store.git",
+  "createRepository": true,
+  "objectFormat": "sha1",
+  "branch": "refs/heads/claude-marketplace/v<full-version>",
+  "hooksDirectory": "/absolute/path/to/empty-directory",
+  "author": {"name": "<name>", "email": "<email>", "date": "<unix-seconds> <+hhmm>"},
+  "committer": {"name": "<name>", "email": "<email>", "date": "<unix-seconds> <+hhmm>"},
+  "message": "<message ending in a newline>\n"
+}
+```
+
+`buildRequest` and `output` resolve from the request file's directory; `git`, `repository`, and `hooksDirectory` must be normalized absolute paths. Every Git command runs with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_TERMINAL_PROMPT=0` in its environment, plus the explicit identity for the commit and ref commands. It names the repository with `--git-dir`, runs from `/`, and carries `-c core.hooksPath=<hooksDirectory>`. The step:
+
+1. Checks that the hooks directory is empty and the branch name is valid. With `createRepository`, it requires an absent path under an existing parent, runs `init --bare --template= --object-format=<format>`, and asserts minimal configuration and an absent or empty hooks directory.
+2. Rejects repository configuration that defines `core.hooksPath`, `filter.*`, `user.signingKey`, `gpg.*`, or `commit.gpgSign`; a different object format; `objects/info/alternates` or `http-alternates`; a branch checked out in any worktree; and an existing branch.
+3. Writes blobs with `hash-object -w --no-filters --stdin`, trees with `mktree -z`, the commit with `commit-tree --no-gpg-sign`, and the branch with `update-ref --no-deref <branch> <commit> <zero-id>`. Each object ID must match the one computed from the validated bytes beforehand.
+4. Reads the branch, the commit object, the recursive tree listing, and every blob back, and compares them with the validated tree.
+
+Retain the commit request and the stdout receipt with the candidate evidence; together they record the identity, dates, message, and resulting commit and tree IDs. The same request against a fresh store reproduces the commit ID. A failure before `update-ref` leaves only unreferenced objects; a failure after it leaves the branch, which a retry must reconcile rather than overwrite. The step writes no index, working tree, `HEAD`, remote ref, or tag.
+
+Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs tests/repack-claude.test.mjs tests/repack-git-commit.test.mjs` after changing the allocator, builder, ZIP reader, commit step, or this procedure. The commit tests create stores only in temporary directories outside any repository and remove them. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.

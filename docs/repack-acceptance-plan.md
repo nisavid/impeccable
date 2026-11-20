@@ -40,7 +40,7 @@ Use isolated profiles or controlled test installations where supported, preservi
 
 Exercise an upstream-baseline update and a packaging-only revision while retaining the installed plugin identity. Use real released upstream baselines, and record every exposed qualification version in the allocation inventory. Do not invent upstream provenance to manufacture an update case. The final promoted bytes must be the qualified candidate, not a later unverified rebuild.
 
-If a requested transport or capability cannot be established, return the observed limitation and the concrete alternative before reducing the claim or removing the official entry. The initial qualification remains incomplete for that route. Any supported partial release or alternate delivery route requires its own scope decision.
+If a requested transport or capability cannot be established, return the observed limitation and the concrete alternative before reducing the claim or removing the official entry. The initial qualification remains incomplete for that route. Any supported partial release or alternate delivery route requires its own scope decision. [ADR 0003](adr/0003-claude-desktop-local-route.md) records that decision for a local Claude Desktop delivery.
 
 ## Promote verified bytes
 
