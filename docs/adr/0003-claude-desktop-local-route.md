@@ -4,7 +4,7 @@ The repack also builds a Claude Code plugin package, delivered to Claude Desktop
 
 ## Package
 
-The Claude package is a sibling output of the same build. It comes from the same verified upstream release, uses the one allocated version from [ADR 0001](0001-repack-identity-and-versioning.md), and is built only when the reviewed policy enrolls the Claude surface. The portable archive keeps its bytes; with the Claude surface enrolled, its `RELEASE.json` differs only in the policy and reservation digests that bind the larger enrollment.
+The Claude package is a sibling output of the same build. It comes from the same verified upstream release, uses the one allocated version from [ADR 0001](0001-repack-identity-and-versioning.md), and is built only when the reviewed policy enrolls the Claude surface. Enrolling the Claude surface changes the portable archive in one entry: its `RELEASE.json` carries different policy and reservation digests, which bind the larger enrollment. Every other archive entry keeps its bytes, so the archive's own digest changes for that reason alone.
 
 Upstream ships its Claude plugin as the `plugin/` subtree of the selected source commit, not inside the signed archive. The archive carries the Claude provider copy under `.claude/`, whose markdown names project-relative script paths that upstream rewrites for its plugin. The enrollment therefore pins upstream's complete plugin inventory, and the builder reproduces it exactly while keeping every signed byte it can:
 

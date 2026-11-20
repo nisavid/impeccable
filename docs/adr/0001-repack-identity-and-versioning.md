@@ -29,7 +29,7 @@ The maintained advanced-patch allocation and provenance procedure is [Real Skill
 
 ## Source and consumer identity
 
-The generated marketplace contains `.agents/plugins/marketplace.json` and the qualified package under `plugins/impeccable/`. Each repack has an immutable `repack-v<full-package-version>` tag; the moving `marketplace` branch advances only after the selected checks pass. Upstream `skill-v*` release identities remain separate. Package manifests agree on the allocated repack version while the copied upstream skill retains its own version.
+The generated marketplace contains `.agents/plugins/marketplace.json` and the qualified package under `plugins/impeccable/`. Each repack has an immutable `repack-v<full-package-version>` tag before any hosted exposure; the moving `marketplace` branch advances only after the selected checks pass. A local delivery under [ADR 0003](0003-claude-desktop-local-route.md) has no tag until it is hosted: its reservation, candidate record, private exposure-inventory entry, and pinned local commit precede its first resolve. Upstream `skill-v*` release identities remain separate. Package manifests agree on the allocated repack version while the copied upstream skill retains its own version.
 
 The selected identity does not establish collision-free replacement, account migration, update detection, or propagation. Qualification retains the working installation until the replacement's required behavior is observed. Publication recovery and consumer rollback behavior remain to be settled in the [qualification and promotion decision](https://github.com/nisavid/impeccable/issues/6). Failed qualification preserves the last qualified publication.
 
