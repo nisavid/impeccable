@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
+import { chmodSync } from 'node:fs';
 import { signBundle, publicKeyHex } from '../../scripts/sign-bundle.mjs';
 import { writeZip } from '../../scripts/lib/repack-zip.mjs';
 import { sha256 } from '../../scripts/repack.mjs';
@@ -31,7 +32,7 @@ export const claudePluginAgent = '---\nname: impeccable-documenter\n---\nRun `"$
 
 export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = true, changeClaude = () => {} } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n'), file('scripts/engine-checksums.txt', '0.1.18 impeccable-linux-x64 ' + 'd'.repeat(64) + '\n')];
+  const skills = [file('SKILL.md', '---\nname: impeccable\nversion: 4.8.0\n---\nRead [guide](reference/guide.md).\n'), file('reference/guide.md', 'Guide\n'), file('scripts/impeccable', '#!/bin/sh\nprintf "fixture engine\\n"\n', 0o755), file('scripts/impeccable.cmd', '@echo off\r\n'), file('scripts/VERSION', '0.1.18\n'), file('scripts/engine-checksums.txt', '0.1.18 impeccable-linux-x64 ' + 'd'.repeat(64) + '\n'), file('agents/impeccable_documenter.toml', 'name = "impeccable_documenter"\n')];
   const windows = 'cmd /c if exist ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" ".codex\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
   const nativeWindows = 'cmd /c if exist "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" "${PLUGIN_ROOT}\\skills\\impeccable\\scripts\\impeccable.cmd" hook';
   const launcher = '".codex/skills/impeccable/scripts/impeccable"';
@@ -48,8 +49,10 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
     agents: [file('impeccable-documenter.md', claudeProjectAgent)],
     settings: file('.claude/settings.json', json(claudeHooks('${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts'))),
   };
+  // Upstream's complete plugin inventory: the provider copy, with the markdown
+  // that upstream rewrites for its plugin, plus the plugin hooks.
   const claudeSources = [
-    file('plugin/skills/impeccable/SKILL.md', claudePluginSkill),
+    ...claudeArchive.skill.map(entry => file(`plugin/skills/impeccable/${entry.name}`, entry.name === 'SKILL.md' ? claudePluginSkill : entry.bytes, entry.mode)),
     file('plugin/agents/impeccable-documenter.md', claudePluginAgent),
     file('plugin/hooks/hooks.json', json(claudeHooks('${CLAUDE_PLUGIN_ROOT}/skills/impeccable/scripts', { plugin: true }))),
   ];
@@ -64,8 +67,8 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
   const signature = json(signBundle(universal, '4.8.0', privateKey, { enrolled: publicKeyHex(publicKey) }));
   const sources = [file('LICENSE', 'Apache fixture\n'), file('NOTICE.md', 'Attribution fixture\n'), file('.claude-plugin/plugin.json', json(manifest)), file('scripts/lib/assets/plugin-icon.png', 'icon')];
   const asset = (id, name, bytes) => ({ id, name, size: bytes.length, sha256: sha256(bytes) });
-  const pin = { schema: 1, repository: 'pbakaus/impeccable', version: '4.8.0', releaseId: 101, tag: 'skill-v4.8.0', tagObject: 'a'.repeat(40), commit: 'b'.repeat(40), assets: [asset(1, 'universal.zip', universal), asset(2, 'universal.zip.sig.json', signature)], sourceFiles: sources.map(f => ({ name: f.name, sourcePath: f.name, sha256: sha256(f.bytes), mode: f.mode })) };
-  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['scripts/VERSION', 'scripts/engine-checksums.txt', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
+  const pin = { schema: 1, repository: 'pbakaus/impeccable', version: '4.8.0', releaseId: 101, tag: 'skill-v4.8.0', tagObject: 'a'.repeat(40), commit: 'b'.repeat(40), assets: [asset(1, 'universal.zip', universal), asset(2, 'universal.zip.sig.json', signature)], sourceFiles: sources.map(f => ({ path: f.name, mode: f.mode, sha256: sha256(f.bytes) })) };
+  const policy = { schema: 1, repository: 'pbakaus/impeccable', keyId: 'enrolled', publicKey: publicKeyHex(publicKey), license: 'Apache-2.0', skillPrefix: '.codex/skills/impeccable/', projectHooksPath: '.codex/hooks.json', projectSkillPath: '.codex/skills/impeccable', hooks, licenseFiles: sources.slice(0, 2).map(f => ({ name: f.name, sha256: sha256(f.bytes) })), requiredSkillFiles: ['SKILL.md', 'scripts/impeccable', 'scripts/impeccable.cmd', 'scripts/VERSION'], executableFiles: ['scripts/impeccable'], runtimeFiles: ['agents/impeccable_documenter.toml', 'scripts/VERSION', 'scripts/engine-checksums.txt', 'scripts/impeccable', 'scripts/impeccable.cmd'], runtimeOrigins };
   policy.runtimeBaseline = {
     capabilities: {
       hookExecution: 'Synthetic hook receives JSON stdin.',
@@ -89,7 +92,6 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
       agentsPrefix: '.claude/agents/',
       projectHooksPath: '.claude/settings.json',
       hooks: JSON.parse(claudeSources.find(entry => entry.name === 'plugin/hooks/hooks.json').bytes),
-      agents: ['impeccable-documenter.md'],
       sourceFiles: claudeSources.map(f => ({ path: f.name, mode: f.mode, sha256: sha256(f.bytes) })),
     };
   }
@@ -97,11 +99,45 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
   const version = '4.8.1+from.4.8.0';
   const exposureInventory = { complete: true, records: [{ version: '4.8.0' }] };
   const reservation = { schema: 1, version, upstream: pin.version, binding: { procedureRevision, inputsSha256: sha256(json({ pin, policy })) }, advance: false, exposureInventory, exposureInventorySha256: sha256(json(exposureInventory)) };
-  return { universal, signature, sources, claudeSources: claude ? claudeSources : [], pin, policy, version, procedureRevision, reservation };
+  const sourceRecords = [...sources, ...(claude ? claudeSources : [])].map(f => ({ path: f.name, bytes: f.bytes, mode: f.mode }));
+  return { universal, signature, sources: sourceRecords, pin, policy, version, procedureRevision, reservation };
 }
 
 // Recompute the reservation's input binding after a test edits the pin or policy.
 export function rebind(input) {
   input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
   return input;
+}
+
+export const source = (input, path) => input.sources.find(entry => entry.path === path);
+export const sourcePin = (input, path) => [...input.pin.sourceFiles, ...(input.policy.claude?.sourceFiles ?? [])].find(entry => entry.path === path);
+
+// Replace a source file's bytes or mode and repin it, as an enrollment of
+// different upstream content would.
+export function repin(input, path, { bytes, mode } = {}) {
+  const entry = source(input, path);
+  const pin = sourcePin(input, path);
+  if (bytes !== undefined) entry.bytes = Buffer.from(bytes);
+  if (mode !== undefined) entry.mode = mode;
+  Object.assign(pin, { mode: entry.mode, sha256: sha256(entry.bytes) });
+  return rebind(input);
+}
+
+// Drop a source file and its pin.
+export function unpin(input, path) {
+  input.sources = input.sources.filter(entry => entry.path !== path);
+  for (const list of [input.pin.sourceFiles, input.policy.claude?.sourceFiles ?? []]) {
+    const index = list.findIndex(entry => entry.path === path);
+    if (index >= 0) list.splice(index, 1);
+  }
+  return rebind(input);
+}
+
+// Stage every source file under root/<prefix>. Only the owner execute bit
+// carries meaning, so other permission bits follow the caller's umask.
+export function stageSources(input, put, prefix = 'source') {
+  for (const entry of input.sources) {
+    const filename = put(`${prefix}/${entry.path}`, entry.bytes);
+    if (entry.mode & 0o100) chmodSync(filename, 0o755);
+  }
 }

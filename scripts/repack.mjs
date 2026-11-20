@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCandidate, jsonBytes } from './lib/repack-package.mjs';
+import { buildCandidate, jsonBytes, sourcePins } from './lib/repack-package.mjs';
 import { safePath } from './lib/repack-zip.mjs';
 import { CLAUDE_MARKETPLACE_DIRECTORY } from './lib/repack-claude.mjs';
 import { commitSnapshot } from './lib/repack-git-commit.mjs';
@@ -106,12 +106,8 @@ export function loadBuildRequest(filename) {
   }
   const sourceRoot = resolve(request.sourceRoot);
   if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
-  const sources = pin.sourceFiles.map(expected => ({ name: expected.name, ...readSupplemental(sourceRoot, expected.sourcePath) }));
-  // Claude sources are staged under the same root at their pinned Git paths.
-  const claudeSources = Array.isArray(policy.claude?.sourceFiles)
-    ? policy.claude.sourceFiles.map(expected => ({ name: expected?.path, ...readSupplemental(sourceRoot, expected?.path) }))
-    : [];
-  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, claudeSources, reservation, version: reservation.version, procedureRevision };
+  const sources = sourcePins(pin, policy).map(expected => ({ path: expected.path, ...readSupplemental(sourceRoot, expected.path) }));
+  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, reservation, version: reservation.version, procedureRevision };
 }
 
 function outputFiles(result) {

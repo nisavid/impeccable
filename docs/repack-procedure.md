@@ -43,15 +43,15 @@ The archive's Ed25519 signature authenticates its version, artifact name, size, 
     {"id": 2, "name": "universal.zip.sig.json", "size": 348, "sha256": "<64 hex>"}
   ],
   "sourceFiles": [
-    {"name": ".claude-plugin/plugin.json", "sourcePath": ".claude-plugin/plugin.json", "mode": 420, "sha256": "<64 hex>"},
-    {"name": "LICENSE", "sourcePath": "LICENSE", "mode": 420, "sha256": "<64 hex>"},
-    {"name": "NOTICE.md", "sourcePath": "NOTICE.md", "mode": 420, "sha256": "<64 hex>"},
-    {"name": "scripts/lib/assets/plugin-icon.png", "sourcePath": "scripts/lib/assets/plugin-icon.png", "mode": 420, "sha256": "<64 hex>"}
+    {"path": ".claude-plugin/plugin.json", "mode": 420, "sha256": "<64 hex>"},
+    {"path": "LICENSE", "mode": 420, "sha256": "<64 hex>"},
+    {"path": "NOTICE.md", "mode": 420, "sha256": "<64 hex>"},
+    {"path": "scripts/lib/assets/plugin-icon.png", "mode": 420, "sha256": "<64 hex>"}
   ]
 }
 ```
 
-The IDs and sizes illustrate the shape. Unix mode `420` is the decimal value of octal `0644`. For regular supplemental files, the loader maps the owner execute bit to the Git mode, so a checkout umask can change read and write permissions without changing the comparison.
+The IDs and sizes illustrate the shape. Every source-commit file, here and in the Claude enrollment, uses the same `{path, mode, sha256}` record, where `path` is the file's Git path and `mode` is `420` (octal `0644`) or `493` (octal `0755`); the portable supplemental files must be `420`. Unix mode `420` is the decimal value of octal `0644`. For regular supplemental files, the loader maps the owner execute bit to the Git mode, so a checkout umask can change read and write permissions without changing the comparison.
 
 ## Enroll the supported upstream surface
 
@@ -94,12 +94,11 @@ Add a `claude` object to the reviewed policy only for a Claude delivery. Without
 | `agentsPrefix` | `.claude/agents/` |
 | `projectHooksPath` | `.claude/settings.json` |
 | `hooks` | Complete expected Claude plugin hook object, equal to upstream `plugin/hooks/hooks.json` |
-| `agents` | Sorted file names of every agent under `agentsPrefix` in the signed archive |
-| `sourceFiles` | Every source-commit file the Claude tree uses, each with `path`, `mode`, and `sha256` |
+| `sourceFiles` | Upstream's complete plugin skill, agents, and hooks at the selected commit, each with `path`, `mode`, and `sha256` |
 
-Supported `sourceFiles` paths are `plugin/hooks/hooks.json` (required), `plugin/agents/<name>.md` for an enrolled agent, and `plugin/skills/impeccable/<path>.md` for a markdown file present in the signed Claude skill subtree. Each must be a regular `0644` file. Stage them under `sourceRoot` at those paths and compare them with the selected commit's Git blobs, as for the other supplemental files.
+`sourceFiles` lists every file under `plugin/skills/impeccable/` and `plugin/agents/`, plus `plugin/hooks/hooks.json`, at the selected commit; produce it mechanically from that commit's tree. Agents and hooks must be `0644`. Stage every listed file under `sourceRoot` at its path and compare it with the selected commit's Git blob, as for the other supplemental files. The enrollment has exactly these five fields.
 
-The builder copies the signed Claude skill subtree and requires its runtime and executable files to equal the enrolled Codex runtime byte for byte and mode for mode. Enrolled sources replace only the listed markdown and agents. The hooks must equal `policy.claude.hooks`, keep upstream's Claude event set from `projectHooksPath`, and root every command at `${CLAUDE_PLUGIN_ROOT}`. No packaged markdown may name `.claude/skills/impeccable/scripts`. Agents must equal the enrolled list. The Claude manifest keeps upstream authorship, description, and homepage, names the fork repository and the allocated version, carries the enrolled license and keywords only when upstream supplies them, and points `skills` at `./skills/`. The catalog `nisavid-impeccable` lists the plugin at `./plugins/impeccable` with the same version. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
+The built plugin's skill, agents, and hooks equal that inventory exactly. The pinned skill and agent paths must equal the signed archive's `skillPrefix` and `agentsPrefix` paths, and a path in one and not the other fails the build. Each file comes from the signed archive when the archive's bytes and mode match the pin, and from the staged source-commit file otherwise; `RELEASE.json` records which. The skill's runtime files, executables, and required support files must equal the enrolled `runtimeFiles`, `executableFiles`, and `requiredSkillFiles`, apart from the Codex skill's own `agents/` folder, and every runtime or executable file must equal its Codex counterpart byte for byte and mode for mode. The hooks must equal `policy.claude.hooks`, keep upstream's Claude event set from `projectHooksPath`, and root every command at `${CLAUDE_PLUGIN_ROOT}`. As a second guard, no packaged markdown may name `.claude/skills/impeccable/scripts`. The Claude manifest keeps upstream authorship, description, and homepage, names the fork repository and the allocated version, carries the enrolled license and keywords only when upstream supplies them, and points `skills` at `./skills/`. The catalog `nisavid-impeccable` lists the plugin at `./plugins/impeccable` with the same version. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
 
 ## Reserve one version
 

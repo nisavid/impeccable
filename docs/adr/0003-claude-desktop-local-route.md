@@ -6,14 +6,15 @@ The repack also builds a Claude Code plugin package, delivered to Claude Desktop
 
 The Claude package is a sibling output of the same build. It comes from the same verified upstream release, uses the one allocated version from [ADR 0001](0001-repack-identity-and-versioning.md), and is built only when the reviewed policy enrolls the Claude surface. The portable archive keeps its bytes; with the Claude surface enrolled, its `RELEASE.json` differs only in the policy and reservation digests that bind the larger enrollment.
 
-Upstream ships its Claude plugin as the `plugin/` subtree of the selected source commit, not inside the signed archive. The archive carries the Claude provider copy under `.claude/`, whose markdown names project-relative script paths that upstream rewrites for its plugin. The builder therefore keeps every signed archive byte it can and takes the rest from the source commit:
+Upstream ships its Claude plugin as the `plugin/` subtree of the selected source commit, not inside the signed archive. The archive carries the Claude provider copy under `.claude/`, whose markdown names project-relative script paths that upstream rewrites for its plugin. The enrollment therefore pins upstream's complete plugin inventory, and the builder reproduces it exactly while keeping every signed byte it can:
 
-- The skill is the signed `.claude/skills/impeccable/` subtree. Its runtime and executable files must equal the enrolled Codex runtime, so the runtime baseline covers them. Pinned source-commit files replace only markdown files that exist in that subtree.
-- Plugin-root agents are exactly the enrolled names, which must equal the `.claude/agents/` files in the archive. A pinned source-commit file replaces an agent's bytes.
+- The policy pins every file of upstream's plugin skill, agents, and hooks at the selected commit by path, mode, and SHA-256. The built plugin's skill, agents, and hooks equal that inventory, so any difference fails the build.
+- The pinned skill and agent paths must equal the signed `.claude/skills/impeccable/` and `.claude/agents/` paths. Each file comes from the signed archive when its bytes and mode hash to the pin, and from the source commit only where they differ.
+- The skill's runtime files, executables, and required support files equal the enrolled inventories, apart from the Codex skill's own `agents/` folder, and each runtime or executable file equals its Codex counterpart, so the runtime baseline covers them.
 - The hooks are upstream's `plugin/hooks/hooks.json`, already rooted at `${CLAUDE_PLUGIN_ROOT}`. They must equal the enrolled hooks exactly, keep every handler field, and carry the same event set as the archive's `.claude/settings.json`. Relocating the project hooks instead would drop the plugin form's `sh` guard, `windows` command, and `env` field.
-- No packaged markdown may name the project-relative scripts path.
+- As a second guard, no packaged markdown may name the project-relative scripts path.
 
-Every source-commit file is pinned in the policy by path, mode, and SHA-256. Those hashes identify inputs; they do not authenticate a publisher. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
+Source-commit hashes identify inputs; they do not authenticate a publisher. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
 
 The catalog is named `nisavid-impeccable` so it can sit beside upstream's `impeccable` marketplace in one client configuration. The plugin keeps the name `impeccable`. The manifest carries no `hooks` or `agents` key, matching upstream's plugin manifest, because Claude Code discovers both by location.
 

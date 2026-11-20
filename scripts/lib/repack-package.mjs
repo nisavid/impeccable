@@ -3,14 +3,31 @@ import { readZip, writeZip, safePath } from './repack-zip.mjs';
 import { signaturePayload } from '../sign-bundle.mjs';
 import { allocateVersion } from './repack-version.mjs';
 import { checkedFile, digest, fail, hash, inventory, isRuntimeFile, jsonBytes, requireSkillIdentity, same, validateSupportLinks } from './repack-common.mjs';
-import { buildClaudePackage, verifyClaudeSources } from './repack-claude.mjs';
+import { buildClaudePackage } from './repack-claude.mjs';
 
 export { jsonBytes };
 function commit(value) {
   if (!/^[0-9a-f]{40}$/.test(value)) fail('Invalid pinned Git object.');
 }
 
-export function verifyInputs({ universal, signature, sources, claudeSources = [], pin, policy, procedureRevision }) {
+// Every source-commit file is pinned as {path, mode, sha256}: the portable
+// supplemental files in the pin, and the Claude plugin inventory in the policy.
+export function sourcePins(pin, policy) {
+  if (!Array.isArray(pin?.sourceFiles)) fail('Source-file inventory mismatch.');
+  if (Object.hasOwn(policy ?? {}, 'claude') && !Array.isArray(policy.claude?.sourceFiles)) fail('Complete Claude enrollment required.');
+  const pins = [...pin.sourceFiles, ...(policy?.claude?.sourceFiles ?? [])];
+  for (const record of pins) {
+    if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== 'mode,path,sha256' || ![0o644, 0o755].includes(record.mode)) {
+      fail('Source pins need exactly path, mode (420 or 493), and sha256.');
+    }
+    safePath(record.path);
+    digest(record.sha256);
+  }
+  if (new Set(pins.map(record => record.path)).size !== pins.length) fail('Duplicate source pin.');
+  return pins;
+}
+
+export function verifyInputs({ universal, signature, sources, pin, policy, procedureRevision }) {
   if (pin?.schema !== 1 || policy?.schema !== 1 || pin.repository !== policy.repository || pin.repository !== 'pbakaus/impeccable') fail('Unsupported publisher or input schema.');
   if (typeof policy.license !== 'string' || !policy.license || !/^[a-z0-9-]{1,64}$/.test(policy.keyId)) fail('Accepted license and signing identity are required.');
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pin.version) || pin.tag !== `skill-v${pin.version}` || !Number.isSafeInteger(pin.releaseId) || pin.releaseId <= 0) fail('Pinned release tag or identity disagrees.');
@@ -31,15 +48,18 @@ export function verifyInputs({ universal, signature, sources, claudeSources = []
   if (envelope?.schema !== 1 || envelope.keyId !== policy.keyId || envelope.version !== pin.version || envelope.artifact !== 'universal.zip' || envelope.size !== universal.length || envelope.sha256 !== hash(universal) || !/^[0-9a-f]{128}$/.test(envelope.signature) || !/^[0-9a-f]{64}$/.test(policy.publicKey)) fail('Upstream signature identity mismatch.');
   const key = createPublicKey({ format: 'der', type: 'spki', key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(policy.publicKey, 'hex')]) });
   if (!verify(null, signaturePayload(envelope), key, Buffer.from(envelope.signature, 'hex'))) fail('Upstream signature verification failed.');
-  if (!Array.isArray(sources) || !Array.isArray(pin.sourceFiles) || sources.length !== pin.sourceFiles.length || new Set(sources.map(file => file.name)).size !== sources.length) fail('Source-file inventory mismatch.');
-  const sourceMap = new Map(sources.map(file => [safePath(file.name), file]));
-  for (const expected of pin.sourceFiles) {
-    safePath(expected.sourcePath);
-    if (expected.name !== expected.sourcePath) fail('Supplemental source path must identify its pinned Git path.');
-    digest(expected.sha256);
-    const file = checkedFile(sourceMap, expected.name);
-    if (file.mode !== expected.mode || file.mode !== 0o644 || hash(file.bytes) !== expected.sha256) fail(`Source-file hash or mode mismatch: ${expected.name}`);
+  const pins = sourcePins(pin, policy);
+  if (!Array.isArray(sources) || sources.length !== pins.length || new Set(sources.map(file => file.path)).size !== sources.length) fail('Source-file inventory mismatch.');
+  const given = new Map(sources.map(file => [file.path, file]));
+  for (const expected of pins) {
+    const file = given.get(expected.path);
+    if (!file) fail('Source-file inventory mismatch.');
+    if (file.mode !== expected.mode || !Buffer.isBuffer(file.bytes) || hash(file.bytes) !== expected.sha256) fail(`Source-file hash or mode mismatch: ${expected.path}`);
   }
+  const sourceMap = new Map(pin.sourceFiles.map(expected => {
+    if (expected.mode !== 0o644) fail(`Source-file hash or mode mismatch: ${expected.path}`);
+    return [expected.path, { ...given.get(expected.path), name: expected.path }];
+  }));
   if (!Array.isArray(policy.licenseFiles) || !policy.licenseFiles.some(file => file.name === 'LICENSE')) fail('Enrolled license inventory required.');
   for (const expected of policy.licenseFiles) {
     digest(expected.sha256);
@@ -53,9 +73,10 @@ export function verifyInputs({ universal, signature, sources, claudeSources = []
   const skill = archive.filter(file => file.name.startsWith(policy.skillPrefix)).map(file => ({ ...file, name: file.name.slice(policy.skillPrefix.length) }));
   const capabilities = validateSkill(skill, policy);
   // The Claude output is built only when the reviewed policy enrolls it.
-  if (!Object.hasOwn(policy, 'claude') && claudeSources.length) fail('Claude sources need a reviewed Claude enrollment.');
-  const claudeSourceMap = Object.hasOwn(policy, 'claude') ? verifyClaudeSources(claudeSources, policy.claude) : null;
-  return { archive, sourceMap, claudeSourceMap, skill, signature: { keyId: envelope.keyId, sha256: envelope.sha256, verified: true }, capabilities };
+  const claudePins = Object.hasOwn(policy, 'claude')
+    ? policy.claude.sourceFiles.map(expected => ({ ...expected, bytes: given.get(expected.path).bytes }))
+    : null;
+  return { archive, sourceMap, claudePins, skill, signature: { keyId: envelope.keyId, sha256: envelope.sha256, verified: true }, capabilities };
 }
 
 function transformHooks(hooks, projectSkillPath) {
@@ -128,7 +149,7 @@ function validateSkill(skill, policy) {
 export function buildCandidate(input) {
   const { pin, policy, version, procedureRevision, reservation } = input;
   if (reservation?.schema !== 1 || reservation.upstream !== pin.version || reservation.version !== version || reservation.binding?.procedureRevision !== procedureRevision || reservation.binding.inputsSha256 !== hash(jsonBytes({ pin, policy })) || reservation.exposureInventorySha256 !== hash(jsonBytes(reservation.exposureInventory)) || allocateVersion(pin.version, reservation.exposureInventory, { advance: reservation.advance }) !== version) fail('Reservation does not bind this allocation, procedure, and input identity.');
-  const { archive, sourceMap, claudeSourceMap, skill, signature, capabilities } = verifyInputs(input);
+  const { archive, sourceMap, claudePins, skill, signature, capabilities } = verifyInputs(input);
   const projectHooks = JSON.parse(checkedFile(new Map(archive.map(file => [file.name, file])), policy.projectHooksPath).bytes);
   const hooks = transformHooks(projectHooks, policy.projectSkillPath);
   same(hooks, policy.hooks, 'Upstream hooks changed; review integration enrollment.');
@@ -157,8 +178,8 @@ export function buildCandidate(input) {
     'Relocate upstream hook launcher paths to PLUGIN_ROOT; retain events, commands, and all other hook fields.',
   ], inputMapping: skill.map(file => ({ source: `${policy.skillPrefix}${file.name}`, destination: `skills/impeccable/${file.name}`, mode: file.mode, sha256: hash(file.bytes) })), inventory: inventory(payload) };
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
-  const claude = claudeSourceMap && buildClaudePackage({
-    archive, codexSkill: skill, policy, verified: claudeSourceMap, sourceMap, manifest, version,
+  const claude = claudePins && buildClaudePackage({
+    archive, codexSkill: skill, policy, pins: claudePins, sourceMap, manifest, version,
     provenance: { upstream: pin, procedureRevision, reservationSha256: provenance.reservationSha256, allocation, policySha256: provenance.policySha256, signature, capabilities },
   });
   const bytes = writeZip(payload);
@@ -166,7 +187,7 @@ export function buildCandidate(input) {
   const candidate = { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation checks inline angle-bracket destinations and bare destinations with balanced parentheses. It allows surrounding whitespace and optional quoted titles and skips code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] };
   if (claude) {
     candidate.claude = claude.record;
-    candidate.limits.push('The Claude tree takes pinned source-commit markdown and hooks where upstream rewrites them for its plugin; those hashes identify inputs and do not authenticate their publisher. Client loading, hook delivery, and the local commit require separate observations.');
+    candidate.limits.push('The Claude tree equals the pinned upstream plugin inventory; files that differ from the signed archive come from the source commit, whose hashes identify inputs and do not authenticate their publisher. Client loading, hook delivery, and the local commit require separate observations.');
   }
   return { archive: bytes, payload: readZip(bytes), catalog, candidate, ...(claude && { claude: { files: claude.files, catalog: claude.catalog } }) };
 }

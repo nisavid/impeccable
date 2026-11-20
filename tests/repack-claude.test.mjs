@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { sha256, validateCandidate, writeCandidate } from '../scripts/repack.mjs';
-import { claudePluginAgent, claudePluginSkill, file, fixture, json, rebind } from './lib/repack-fixture.mjs';
+import { claudePluginAgent, claudePluginSkill, claudeProjectSkill, file, fixture, json, rebind, repin, source, sourcePin, stageSources, unpin } from './lib/repack-fixture.mjs';
 
 const claudeFiles = result => new Map(result.claude.files.map(entry => [entry.name, entry]));
 const plugin = 'plugins/impeccable/';
@@ -41,7 +41,10 @@ test('builds a deterministic Claude plugin tree and catalog beside the portable 
   assert.equal(files.get(`${plugin}agents/impeccable-documenter.md`).bytes.toString(), claudePluginAgent);
   assert.equal(files.get(`${plugin}skills/impeccable/scripts/impeccable`).mode, 0o755);
   assert.equal(files.get(`${plugin}skills/impeccable/reference/guide.md`).bytes.toString(), 'Guide\n');
-  assert.deepEqual(files.get(`${plugin}hooks/hooks.json`).bytes, input.claudeSources.find(entry => entry.name === 'plugin/hooks/hooks.json').bytes);
+  assert.deepEqual(files.get(`${plugin}hooks/hooks.json`).bytes, source(input, 'plugin/hooks/hooks.json').bytes);
+  // The built skill, agents, and hooks equal the pinned upstream plugin inventory exactly.
+  const built = [...files].filter(([name]) => /^plugins\/impeccable\/(skills|agents|hooks)\//.test(name)).map(([name, entry]) => [`plugin/${name.slice(plugin.length)}`, entry.mode, sha256(entry.bytes)]).sort();
+  assert.deepEqual(built, input.policy.claude.sourceFiles.map(pin => [pin.path, pin.mode, pin.sha256]).sort());
   for (const [name, entry] of files) {
     if (name.endsWith('.md')) assert.doesNotMatch(entry.bytes.toString(), /\.claude\/skills\/impeccable\/scripts/, name);
   }
@@ -52,6 +55,7 @@ test('builds a deterministic Claude plugin tree and catalog beside the portable 
   assert.deepEqual(mapping.get('skills/impeccable/SKILL.md'), { origin: 'source-commit', source: 'plugin/skills/impeccable/SKILL.md', destination: 'skills/impeccable/SKILL.md', mode: 0o644, sha256: sha256(claudePluginSkill) });
   assert.equal(mapping.get('hooks/hooks.json').origin, 'source-commit');
   assert.equal(mapping.get('agents/impeccable-documenter.md').origin, 'source-commit');
+  assert.deepEqual(mapping.get('skills/impeccable/scripts/impeccable'), { origin: 'signed-archive', source: '.claude/skills/impeccable/scripts/impeccable', destination: 'skills/impeccable/scripts/impeccable', mode: 0o755, sha256: sha256(files.get(`${plugin}skills/impeccable/scripts/impeccable`).bytes) });
   assert.equal(mapping.get('LICENSE').origin, 'source-commit');
   assert.deepEqual(provenance.inventory.map(entry => entry.path), [...files.keys()].filter(name => name.startsWith(plugin) && name !== `${plugin}RELEASE.json`).map(name => name.slice(plugin.length)).sort());
   assert.ok(provenance.transformations.length > 0);
@@ -74,10 +78,8 @@ test('Claude manifest, catalog, and candidate record agree on name and version',
 
 test('carries the enrolled license only when the upstream manifest supplies one', () => {
   const input = fixture();
-  const manifest = input.sources.find(entry => entry.name === '.claude-plugin/plugin.json');
-  manifest.bytes = json({ ...JSON.parse(manifest.bytes), license: 'Apache-2.0', keywords: ['design'] });
-  input.pin.sourceFiles.find(entry => entry.name === manifest.name).sha256 = sha256(manifest.bytes);
-  const generated = JSON.parse(claudeFiles(buildCandidate(rebind(input))).get(`${plugin}.claude-plugin/plugin.json`).bytes);
+  repin(input, '.claude-plugin/plugin.json', { bytes: json({ ...JSON.parse(source(input, '.claude-plugin/plugin.json').bytes), license: 'Apache-2.0', keywords: ['design'] }) });
+  const generated = JSON.parse(claudeFiles(buildCandidate(input)).get(`${plugin}.claude-plugin/plugin.json`).bytes);
   assert.equal(generated.license, 'Apache-2.0');
   assert.deepEqual(generated.keywords, ['design']);
   assert.deepEqual(Object.keys(generated), ['name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills']);
@@ -85,7 +87,7 @@ test('carries the enrolled license only when the upstream manifest supplies one'
 
 test('portable archive differs only in recorded input identities when Claude output is enabled', () => {
   const enabled = fixture();
-  const disabled = { ...enabled, policy: structuredClone(enabled.policy), reservation: structuredClone(enabled.reservation), claudeSources: [] };
+  const disabled = { ...enabled, policy: structuredClone(enabled.policy), reservation: structuredClone(enabled.reservation), sources: enabled.sources.filter(entry => !entry.path.startsWith('plugin/')) };
   delete disabled.policy.claude;
   rebind(disabled);
   const withClaude = buildCandidate(enabled);
@@ -121,7 +123,7 @@ test('Claude hooks equal the enrolled policy and keep the upstream Claude event 
   assert.throws(() => buildCandidate(rebind(changedPolicy)), /Upstream Claude hooks changed/);
 
   const extraEvent = fixture(undefined, [], { changeClaude: ({ sources }) => {
-    const entry = sources.find(source => source.name === 'plugin/hooks/hooks.json');
+    const entry = sources.find(candidate => candidate.name === 'plugin/hooks/hooks.json');
     const value = JSON.parse(entry.bytes);
     value.hooks.UserPromptSubmit = value.hooks.Stop;
     entry.bytes = json(value);
@@ -129,7 +131,7 @@ test('Claude hooks equal the enrolled policy and keep the upstream Claude event 
   assert.throws(() => buildCandidate(extraEvent), /Claude plugin hook events differ from upstream Claude events/);
 
   const projectRooted = fixture(undefined, [], { changeClaude: ({ sources }) => {
-    const entry = sources.find(source => source.name === 'plugin/hooks/hooks.json');
+    const entry = sources.find(candidate => candidate.name === 'plugin/hooks/hooks.json');
     entry.bytes = Buffer.from(entry.bytes.toString().replaceAll('${CLAUDE_PLUGIN_ROOT}/skills', '${CLAUDE_PROJECT_DIR}/.claude/skills'));
   } });
   assert.throws(() => buildCandidate(projectRooted), /Claude hooks must be rooted at CLAUDE_PLUGIN_ROOT/);
@@ -137,72 +139,76 @@ test('Claude hooks equal the enrolled policy and keep the upstream Claude event 
 
 test('fails closed on changed, missing, malformed, or unsafe Claude inputs', () => {
   const rejects = (input, pattern) => assert.throws(() => buildCandidate(input), pattern);
+  const withArchive = change => fixture(undefined, [], { changeClaude: ({ archive }) => change(archive) });
 
-  const changed = fixture();
-  changed.claudeSources[0].bytes = Buffer.from('changed\n');
-  rejects(changed, /Claude source hash or mode mismatch: plugin\/skills\/impeccable\/SKILL\.md/);
-
+  // Every staged source must match its pin, whether or not the archive supplies its bytes.
+  for (const path of ['plugin/skills/impeccable/SKILL.md', 'plugin/skills/impeccable/reference/guide.md']) {
+    const changed = fixture();
+    source(changed, path).bytes = Buffer.from('changed\n');
+    rejects(changed, new RegExp(`Source-file hash or mode mismatch: ${path.replaceAll('.', '\\.')}`));
+  }
   const executable = fixture();
-  executable.claudeSources[1].mode = 0o755;
-  rejects(executable, /Claude source hash or mode mismatch/);
-
+  source(executable, 'plugin/agents/impeccable-documenter.md').mode = 0o755;
+  rejects(executable, /Source-file hash or mode mismatch: plugin\/agents\/impeccable-documenter\.md/);
   const missingSource = fixture();
-  missingSource.claudeSources = missingSource.claudeSources.filter(entry => entry.name !== 'plugin/hooks/hooks.json');
-  rejects(missingSource, /Claude source inventory mismatch/);
+  missingSource.sources = missingSource.sources.filter(entry => entry.path !== 'plugin/hooks/hooks.json');
+  rejects(missingSource, /Source-file inventory mismatch/);
 
-  const missingHookEnrollment = fixture();
-  missingHookEnrollment.policy.claude.sourceFiles = missingHookEnrollment.policy.claude.sourceFiles.filter(entry => entry.path !== 'plugin/hooks/hooks.json');
-  missingHookEnrollment.claudeSources = missingHookEnrollment.claudeSources.filter(entry => entry.name !== 'plugin/hooks/hooks.json');
-  rejects(rebind(missingHookEnrollment), /Claude hooks source required/);
+  // The pinned inventory and the signed Claude copy must hold the same paths.
+  rejects(unpin(fixture(), 'plugin/skills/impeccable/reference/guide.md'), /Claude skill inventory differs from the pinned upstream plugin inventory/);
+  const extra = fixture();
+  extra.sources.push({ path: 'plugin/skills/impeccable/reference/new.md', bytes: Buffer.from('New\n'), mode: 0o644 });
+  extra.policy.claude.sourceFiles.push({ path: 'plugin/skills/impeccable/reference/new.md', mode: 0o644, sha256: sha256('New\n') });
+  rejects(rebind(extra), /Claude skill inventory differs from the pinned upstream plugin inventory/);
+  rejects(unpin(fixture(), 'plugin/hooks/hooks.json'), /Claude hooks source required/);
 
-  rejects(fixture(undefined, [], { changeClaude: ({ archive }) => { archive.agents = []; } }), /Upstream Claude agents changed/);
-  rejects(fixture(undefined, [], { changeClaude: ({ archive }) => { archive.agents.push(file('extra.md', 'Extra\n')); } }), /Upstream Claude agents changed/);
-  rejects(fixture(undefined, [], { changeClaude: ({ archive }) => { archive.agents.push(file('nested/extra.md', 'Extra\n')); } }), /Unexpected nested Claude agent path/);
-  rejects(fixture(undefined, [], { changeClaude: ({ archive }) => { delete archive.settings; } }), /Missing support file: \.claude\/settings\.json/);
+  // A non-markdown upstream plugin file that differs from the signed copy is taken from
+  // the source commit, and then fails the runtime equality with the Codex skill.
+  rejects(repin(fixture(), 'plugin/skills/impeccable/scripts/impeccable', { bytes: '#!/bin/sh\nexit 0\n' }), /Claude runtime differs from the enrolled Codex runtime: scripts\/impeccable/);
 
-  const malformedHooks = fixture();
-  malformedHooks.claudeSources[2].bytes = Buffer.from('{');
-  malformedHooks.policy.claude.sourceFiles[2].sha256 = sha256(malformedHooks.claudeSources[2].bytes);
-  rejects(rebind(malformedHooks), /Malformed Claude hooks manifest/);
+  // The Claude runtime, executable, and required inventories equal the enrolled ones.
+  const droppedRuntime = withArchive(archive => { archive.skill = archive.skill.filter(entry => entry.name !== 'scripts/engine-checksums.txt'); });
+  unpin(droppedRuntime, 'plugin/skills/impeccable/scripts/engine-checksums.txt');
+  rejects(droppedRuntime, /Claude runtime-file inventory differs from the enrolled runtime/);
+  const droppedRequired = withArchive(archive => { archive.skill = archive.skill.filter(entry => entry.name !== 'reference/guide.md'); });
+  unpin(droppedRequired, 'plugin/skills/impeccable/reference/guide.md');
+  droppedRequired.policy.requiredSkillFiles.push('reference/guide.md');
+  rejects(rebind(droppedRequired), /Missing support file: reference\/guide\.md/);
+  const extraExecutable = withArchive(archive => { archive.skill.find(entry => entry.name === 'reference/guide.md').mode = 0o755; });
+  repin(extraExecutable, 'plugin/skills/impeccable/reference/guide.md', { mode: 0o755 });
+  rejects(extraExecutable, /Claude executable inventory differs from the enrolled executables/);
+
+  rejects(withArchive(archive => { archive.agents = []; }), /Claude agents differ from the pinned upstream plugin inventory/);
+  rejects(withArchive(archive => { archive.agents.push(file('extra.md', 'Extra\n')); }), /Claude agents differ from the pinned upstream plugin inventory/);
+  rejects(withArchive(archive => { archive.agents.push(file('nested/extra.md', 'Extra\n')); }), /Unexpected nested Claude agent path/);
+  rejects(withArchive(archive => { delete archive.settings; }), /Missing support file: \.claude\/settings\.json/);
+  rejects(repin(fixture(), 'plugin/hooks/hooks.json', { bytes: '{' }), /Malformed Claude hooks manifest/);
 
   for (const unsafe of ['plugin/agents/../../escape.md', '/plugin/agents/x.md', 'plugin/agents/.git/x.md']) {
     const input = fixture();
-    input.policy.claude.sourceFiles[1].path = unsafe;
-    input.claudeSources[1].name = unsafe;
+    sourcePin(input, 'plugin/agents/impeccable-documenter.md').path = unsafe;
+    source(input, 'plugin/agents/impeccable-documenter.md').path = unsafe;
     rejects(rebind(input), /Unsafe archive path/);
   }
-
-  for (const [unsupported, pattern] of [
-    ['plugin/other.txt', /Unsupported Claude supplemental source/],
-    ['plugin/agents/nested/x.md', /Unsupported Claude supplemental source/],
-    ['plugin/skills/impeccable/scripts/impeccable', /Claude source cannot replace runtime or non-markdown skill file/],
-    ['plugin/skills/impeccable/reference/new.md', /Claude source has no signed archive counterpart/],
-    ['plugin/agents/unknown.md', /Claude source has no signed archive counterpart/],
-  ]) {
+  for (const unsupported of ['plugin/other.txt', 'plugin/agents/nested/x.md']) {
     const input = fixture();
-    const extra = file(unsupported, 'Extra\n');
-    input.claudeSources.push(extra);
-    input.policy.claude.sourceFiles.push({ path: unsupported, mode: 0o644, sha256: sha256(extra.bytes) });
-    rejects(rebind(input), pattern);
+    input.sources.push({ path: unsupported, bytes: Buffer.from('Extra\n'), mode: 0o644 });
+    input.policy.claude.sourceFiles.push({ path: unsupported, mode: 0o644, sha256: sha256('Extra\n') });
+    rejects(rebind(input), /Unsupported Claude supplemental source/);
   }
 
-  rejects(fixture(undefined, [], { changeClaude: ({ archive }) => {
-    archive.skill.find(entry => entry.name === 'scripts/impeccable').bytes = Buffer.from('#!/bin/sh\nexit 0\n');
-  } }), /Claude runtime differs from the enrolled Codex runtime: scripts\/impeccable/);
+  // The scripts-path search stays as a second guard: an upstream plugin SKILL.md that
+  // kept the project path is refused even though it hashes to its pin.
+  rejects(repin(fixture(), 'plugin/skills/impeccable/SKILL.md', { bytes: claudeProjectSkill }), /Claude package references the project-relative skill path: skills\/impeccable\/SKILL\.md/);
+  rejects(repin(fixture(), 'plugin/skills/impeccable/SKILL.md', { bytes: claudePluginSkill.replace('name: impeccable', 'name: renamed') }), /Unexpected upstream skill identity/);
 
-  const unrewritten = fixture();
-  unrewritten.policy.claude.sourceFiles = unrewritten.policy.claude.sourceFiles.filter(entry => entry.path !== 'plugin/skills/impeccable/SKILL.md');
-  unrewritten.claudeSources = unrewritten.claudeSources.filter(entry => entry.name !== 'plugin/skills/impeccable/SKILL.md');
-  rejects(rebind(unrewritten), /Claude package references the project-relative skill path: skills\/impeccable\/SKILL\.md/);
-
-  const renamed = fixture(undefined, [], { changeClaude: ({ sources }) => {
-    sources[0].bytes = Buffer.from(claudePluginSkill.replace('name: impeccable', 'name: renamed'));
-  } });
-  rejects(renamed, /Unexpected upstream skill identity/);
-
-  const malformed = fixture();
-  malformed.policy.claude.agents = 'impeccable-documenter.md';
-  rejects(rebind(malformed), /Complete Claude enrollment required/);
+  // One pin shape, and no enrollment field that carries nothing.
+  const oldShape = fixture();
+  oldShape.policy.claude.agents = ['impeccable-documenter.md'];
+  rejects(rebind(oldShape), /Complete Claude enrollment required/);
+  const namedPin = fixture();
+  namedPin.pin.sourceFiles[0].name = namedPin.pin.sourceFiles[0].path;
+  rejects(rebind(namedPin), /Source pins need exactly path, mode \(420 or 493\), and sha256/);
 });
 
 const noPosixShell = process.platform === 'win32' ? 'POSIX hook commands require /bin/sh' : false;
@@ -263,7 +269,7 @@ function cliFixture(t) {
   put('signature.json', input.signature);
   put('pin.json', json(input.pin));
   put('policy.json', json(input.policy));
-  for (const entry of [...input.sources, ...input.claudeSources]) put(`source/${entry.name}`, entry.bytes);
+  stageSources(input, put);
   put(`reservations/repack-v${input.version}.json`, json(input.reservation));
   const requestFile = put('build.json', json({
     universal: 'universal.zip', signature: 'signature.json', pin: 'pin.json', policy: 'policy.json',
@@ -299,7 +305,7 @@ test('CLI builds byte-identical Claude outputs twice and validates them', t => {
 test('validation rejects extra entries, links, and changed bytes inside the Claude tree', t => {
   const { input, root } = cliFixture(t);
   const output = path.join(root, 'retained');
-  const loaded = { ...input, sources: input.sources.map(entry => ({ ...entry })), claudeSources: input.claudeSources.map(entry => ({ ...entry })) };
+  const loaded = input;
   writeCandidate(loaded, output);
   const pluginRoot = path.join(output, 'claude-marketplace/plugins/impeccable');
   const extra = path.join(pluginRoot, 'agents/extra.md');
@@ -332,7 +338,7 @@ test('CLI rejects missing, executable, or symlinked Claude supplemental sources'
   rejects(/Missing pinned supplemental source: plugin\/hooks\/hooks\.json/);
   put('source/plugin/hooks/hooks.json', bytes);
   spawnSync('chmod', ['755', filename]);
-  rejects(/Claude source hash or mode mismatch: plugin\/hooks\/hooks\.json/);
+  rejects(/Source-file hash or mode mismatch: plugin\/hooks\/hooks\.json/);
   unlinkSync(filename);
   symlinkSync(put('hooks-target.json', bytes), filename);
   rejects(/Supplemental source links are unsupported/);

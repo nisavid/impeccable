@@ -12,7 +12,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ENGINE_MISSING_MESSAGE, findEngineBinary } from './lib/engine-bin.mjs';
-import { fixture, file, json } from './lib/repack-fixture.mjs';
+import { fixture, file, json, repin, source, stageSources } from './lib/repack-fixture.mjs';
 
 test('builds byte-identical portable and marketplace payloads preserving upstream files and hooks', () => {
   const input = fixture();
@@ -200,9 +200,7 @@ test('rejects corrupt assets, changed input bindings, changed trust and unsuppor
   assert.throws(mutate(input => { input.policy.licenseFiles[0].sha256 = '0'.repeat(64); }), /license/);
   assert.throws(mutate(input => { input.version = '4.8.1'; }), /Reservation/);
   assert.throws(mutate(input => {
-    const manifest = input.sources.find(f => f.name === '.claude-plugin/plugin.json');
-    manifest.bytes = json({ name: 'impeccable', version: '4.8.0', mcpServers: { bad: {} } });
-    input.pin.sourceFiles.find(f => f.name === manifest.name).sha256 = sha256(manifest.bytes);
+    repin(input, '.claude-plugin/plugin.json', { bytes: json({ name: 'impeccable', version: '4.8.0', mcpServers: { bad: {} } }) });
   }), /manifest/);
 });
 
@@ -484,7 +482,7 @@ function cliFixture(t, { input = fixture(), umask = 0o022 } = {}) {
     put('signature.json', input.signature);
     put('pin.json', json(input.pin));
     put('policy.json', json(input.policy));
-    for (const file of [...input.sources, ...input.claudeSources]) put(`source/${file.name}`, file.bytes);
+    stageSources(input, put);
   });
 
   const command = fileURLToPath(new URL('../scripts/repack.mjs', import.meta.url));
@@ -660,9 +658,7 @@ test('CLI rejects procedure changes and retained archive disagreement under the 
 
 function fixtureWithManifestFields(fields) {
   const input = fixture();
-  const manifest = input.sources.find(entry => entry.name === '.claude-plugin/plugin.json');
-  manifest.bytes = json({ ...JSON.parse(manifest.bytes), ...fields });
-  input.pin.sourceFiles.find(entry => entry.name === manifest.name).sha256 = sha256(manifest.bytes);
+  repin(input, '.claude-plugin/plugin.json', { bytes: json({ ...JSON.parse(source(input, '.claude-plugin/plugin.json').bytes), ...fields }) });
   input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy }));
   return input;
 }

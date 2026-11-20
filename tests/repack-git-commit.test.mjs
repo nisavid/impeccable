@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { expectedSnapshot, fencedEnvironment, commitSnapshot, gitArguments } from '../scripts/lib/repack-git-commit.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { writeCandidate } from '../scripts/repack.mjs';
-import { fixture, json } from './lib/repack-fixture.mjs';
+import { fixture, json, stageSources } from './lib/repack-fixture.mjs';
 
 const GIT = '/usr/bin/git';
 const skip = process.platform === 'win32' || !existsSync(GIT) ? `the local-commit step needs ${GIT}` : false;
@@ -78,7 +78,7 @@ function commitRequest(root, hooks, overrides = {}) {
   put('inputs/pin.json', json(input.pin));
   put('inputs/policy.json', json(input.policy));
   put(`inputs/repack-v${input.version}.json`, json(input.reservation));
-  for (const entry of [...input.sources, ...input.claudeSources]) put(`inputs/source/${entry.name}`, entry.bytes);
+  stageSources(input, put, 'inputs/source');
   put('inputs/build.json', json({ universal: 'universal.zip', signature: 'signature.json', pin: 'pin.json', policy: 'policy.json', reservation: `repack-v${input.version}.json`, sourceRoot: 'source', procedureRevision: input.procedureRevision }));
   const request = { buildRequest: 'inputs/build.json', output: 'candidate', git: GIT, repository: path.join(root, 'store.git'), createRepository: true, objectFormat: 'sha1', branch: 'refs/heads/claude-marketplace/v4.8.1', hooksDirectory: hooks, author, committer, message, ...overrides };
   return { input, output, requestFile: put('commit.json', json(request)), request };
