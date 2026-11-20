@@ -63,7 +63,8 @@ export function reserveCandidate({ upstream, inventory, binding, directory, adva
     const version = allocateVersion(upstream, exposureInventory, { advance });
     reservation = { schema: 1, version, upstream, binding, advance, exposureInventory, exposureInventorySha256: sha256(jsonBytes(exposureInventory)) };
     const filename = path.join(directory, `repack-v${version}.json`);
-    writeFileSync(filename, reservationBytes(reservation), { flag: 'wx', mode: 0o644 });
+    // Owner-only: the exposure inventory can name private or account deliveries.
+    writeFileSync(filename, reservationBytes(reservation), { flag: 'wx', mode: 0o600 });
     written = filename;
   } catch (error) {
     failure = error;

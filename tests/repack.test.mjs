@@ -98,6 +98,17 @@ test('reservations are create-only and include failed candidates in later alloca
   assert.throws(() => reserveCandidate(request), /lock/);
 });
 
+test('reservations are created owner-only under a permissive umask', { skip: process.platform === 'win32' && 'POSIX modes' }, t => {
+  const request = reservationRequest(t);
+  const previous = process.umask(0o022);
+  try {
+    reserveCandidate(request);
+  } finally {
+    process.umask(previous);
+  }
+  assert.equal(fs.statSync(path.join(request.directory, 'repack-v4.8.0.json')).mode & 0o777, 0o600);
+});
+
 function reservationRequest(t) {
   const directory = mkdtempSync(path.join(tmpdir(), 'impeccable-reservation-recovery-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
