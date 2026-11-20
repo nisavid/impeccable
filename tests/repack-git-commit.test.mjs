@@ -121,9 +121,14 @@ test('commits the validated Claude tree in a fresh store with no planted hook, f
   const control = path.join(root, 'control.git');
   assert.equal(spawnSync(GIT, ['init', '-q', '--bare', control], { cwd: root, env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: planted.global, GIT_CONFIG_NOSYSTEM: '1' } }).status, 0);
   assert.ok(existsSync(path.join(control, 'hooks/reference-transaction')), 'init template is live without the fence');
-  const filtered = spawnSync(GIT, [`--git-dir=${control}`, 'hash-object', `--path=${hookFile.name}`, '--stdin'], { input: hookFile.bytes, encoding: 'utf8', env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: planted.global, GIT_CONFIG_NOSYSTEM: '1' } });
+  // Compare filtered and unfiltered IDs from the same control store: it takes
+  // the planted SHA-256 default, so its IDs never equal the SHA-1 store's.
+  const controlHash = flags => spawnSync(GIT, [`--git-dir=${control}`, 'hash-object', ...flags, '--stdin'], { input: hookFile.bytes, encoding: 'utf8', env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: planted.global, GIT_CONFIG_NOSYSTEM: '1' } });
+  const filtered = controlHash([`--path=${hookFile.name}`]);
+  const unfiltered = controlHash(['--no-filters']);
   assert.equal(filtered.status, 0, filtered.stderr);
-  assert.notEqual(filtered.stdout.trim(), hookFile.oid, 'required global filter is live without the fence');
+  assert.equal(unfiltered.status, 0, unfiltered.stderr);
+  assert.notEqual(filtered.stdout.trim(), unfiltered.stdout.trim(), 'required global filter is live without the fence');
 });
 
 test('produces the same commit ID in two fresh stores', { skip }, t => {
