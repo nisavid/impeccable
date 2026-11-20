@@ -71,11 +71,13 @@ function inputs(t) {
   return { input, root, put, run, request, checkFile };
 }
 
+// Modes are recorded because chmod changes ctime, not mtime.
 function snapshot(directory, prefix = '') {
   return readdirSync(directory).sort().flatMap(name => {
     const filename = path.join(directory, name);
     const info = statSync(filename);
-    return info.isDirectory() ? [`${prefix}${name}/`, ...snapshot(filename, `${prefix}${name}/`)] : [`${prefix}${name} ${info.size} ${info.mtimeMs}`];
+    const mode = (info.mode & 0o7777).toString(8);
+    return info.isDirectory() ? [`${prefix}${name}/ ${mode}`, ...snapshot(filename, `${prefix}${name}/`)] : [`${prefix}${name} ${mode} ${info.size} ${info.mtimeMs}`];
   });
 }
 
