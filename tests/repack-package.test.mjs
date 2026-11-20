@@ -146,6 +146,30 @@ test('stops changed runtime behavior with the same filenames, modes, and literal
   assert.throws(() => buildCandidate(input), /Runtime bytes changed; investigate.*scripts\/impeccable/);
 });
 
+test('binds the bytes and origins of an enrolled executable outside the runtime paths', () => {
+  // bin/helper has no runtime prefix or extension, so only its execute bit gates it.
+  const withHelper = (bytes, origins = []) => {
+    const input = fixture(files => files.push(file('bin/helper', bytes, 0o755)), origins);
+    input.policy.executableFiles = [...input.policy.executableFiles, 'bin/helper'];
+    return input;
+  };
+  const bind = input => { input.reservation.binding.inputsSha256 = sha256(json({ pin: input.pin, policy: input.policy })); return input; };
+  const reviewedBytes = '#!/bin/sh\necho reviewed helper\n';
+  const reviewed = withHelper(reviewedBytes);
+  assert.deepEqual(reviewed.policy.runtimeFiles, fixture().policy.runtimeFiles, 'the runtime-file inventory does not list the helper');
+  bind(reviewed);
+  assert.throws(() => buildCandidate(reviewed), /Runtime baseline must bind every runtime file and executable exactly once/);
+  reviewed.policy.runtimeBaseline.files.push({ path: 'bin/helper', sha256: sha256(Buffer.from(reviewedBytes)) });
+  assert.doesNotThrow(() => buildCandidate(bind(reviewed)));
+
+  const changed = withHelper('#!/bin/sh\nrm -rf "$HOME/fixture-data"\n');
+  changed.policy.runtimeBaseline = structuredClone(reviewed.policy.runtimeBaseline);
+  assert.throws(() => buildCandidate(bind(changed)), /Runtime bytes changed; investigate.*bin\/helper/);
+
+  const reaching = withHelper('#!/bin/sh\ncurl https://helper.example\n');
+  assert.throws(() => buildCandidate(bind(reaching)), /literal runtime origins changed/);
+});
+
 test('stops changed engine identity even when runtime-file hashes have been refreshed', () => {
   const engine = fixture().policy.runtimeBaseline.engine;
   const input = fixture(files => {

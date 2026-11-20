@@ -89,7 +89,7 @@ function transformHooks(hooks, projectSkillPath) {
   return visit(hooks);
 }
 
-function validateRuntimeBaseline(runtime, files, baseline) {
+function validateRuntimeBaseline(gated, files, baseline) {
   const areas = ['hookExecution', 'executableSelection', 'engineAcquisition', 'cacheMutation', 'networkDestinations', 'browserLoopback', 'processAndFilesystemAuthority'];
   if (!baseline || !Array.isArray(baseline.files) || !areas.every(area => typeof baseline.capabilities?.[area] === 'string' && baseline.capabilities[area].trim())) {
     fail('Complete reviewed runtime baseline required.');
@@ -121,7 +121,7 @@ function validateRuntimeBaseline(runtime, files, baseline) {
     checksums[asset] = checksum;
   }
   same(Object.entries(checksums).sort(), Object.entries(engine.checksums).sort(), 'Engine checksum records changed; investigate before construction.');
-  same(baseline.files.map(file => file?.path).sort(), runtime.map(file => file.name).sort(), 'Runtime baseline must bind every runtime file exactly once.');
+  same(baseline.files.map(file => file?.path).sort(), gated.map(file => file.name).sort(), 'Runtime baseline must bind every runtime file and executable exactly once.');
   for (const expected of baseline.files) {
     if (typeof expected.sha256 !== 'string') fail('Invalid runtime baseline digest.');
     digest(expected.sha256);
@@ -139,9 +139,13 @@ function validateSkill(skill, policy) {
   same(executables, [...policy.executableFiles].sort(), 'Upstream executable inventory changed; review capabilities.');
   const runtime = skill.filter(file => isRuntimeFile(file.name));
   same(runtime.map(file => file.name).sort(), [...policy.runtimeFiles].sort(), 'Upstream runtime-file inventory changed; review capabilities.');
-  const origins = [...new Set(runtime.flatMap(file => [...file.bytes.toString('utf8').matchAll(/https?:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?/g)].map(match => match[0])))].sort();
+  // The origin scan and content baseline cover runtime files plus every
+  // executable, so an enrolled executable outside the runtime paths cannot
+  // change bytes unnoticed. The runtimeFiles inventory itself is unchanged.
+  const gated = skill.filter(file => isRuntimeFile(file.name) || file.mode & 0o111);
+  const origins = [...new Set(gated.flatMap(file => [...file.bytes.toString('utf8').matchAll(/https?:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?/g)].map(match => match[0])))].sort();
   same(origins, [...policy.runtimeOrigins].sort(), 'Upstream literal runtime origins changed; review capabilities.');
-  const baselineEvidence = validateRuntimeBaseline(runtime, files, policy.runtimeBaseline);
+  const baselineEvidence = validateRuntimeBaseline(gated, files, policy.runtimeBaseline);
   validateSupportLinks(skill, files);
   return { executables, runtimeFiles: runtime.map(file => file.name).sort(), literalRuntimeOrigins: origins, ...baselineEvidence };
 }
