@@ -59,6 +59,10 @@ test('builds a deterministic Claude plugin tree and catalog beside the portable 
   assert.equal(mapping.get('LICENSE').origin, 'source-commit');
   assert.deepEqual(provenance.inventory.map(entry => entry.path), [...files.keys()].filter(name => name.startsWith(plugin) && name !== `${plugin}RELEASE.json`).map(name => name.slice(plugin.length)).sort());
   assert.ok(provenance.transformations.length > 0);
+  // The release and candidate records identify the staged plugin tree and the reviewed exclusions.
+  const listing = [...input.pluginListing].sort();
+  assert.deepEqual(provenance.pluginTree, { listingSha256: sha256(json(listing)), files: listing.length, excludedSourcePaths: ['plugin/.claude-plugin/plugin.json', 'plugin/.grok-plugin/plugin.json'] });
+  assert.deepEqual(first.candidate.claude.pluginTree, provenance.pluginTree);
 });
 
 test('Claude manifest, catalog, and candidate record agree on name and version', () => {
@@ -160,7 +164,7 @@ test('fails closed on changed, missing, malformed, or unsafe Claude inputs', () 
 
   // The enrollment equals the staged plugin tree: a plugin-only file in neither the
   // archive nor the pins, an unclassified plugin entry, and a stale pin or exclusion all fail.
-  for (const path of ['plugin/skills/impeccable/reference/plugin-only.md', 'plugin/agents/plugin-only.md', 'plugin/README.md']) {
+  for (const path of ['plugin/skills/impeccable/reference/plugin-only.md', 'plugin/agents/plugin-only.md', 'plugin/commands/design.md', 'plugin/README.md']) {
     rejects(stagePluginFile(fixture(), path, 'Plugin only\n'), new RegExp(`Staged plugin file is not enrolled: ${path.replaceAll('.', '\\.')}`));
   }
   const stalePin = fixture();

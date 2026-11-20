@@ -20,7 +20,9 @@ const cases = {
   'changed Claude hooks enrollment': input => { input.policy.claude.hooks.hooks.Stop[0].hooks[0].timeout = 31; },
   'old Claude enrollment shape': input => { input.policy.claude.agents = ['impeccable-documenter.md']; },
   'plugin-only file in neither the archive nor the pins': input => stagePluginFile(input, 'plugin/skills/impeccable/reference/plugin-only.md', 'Plugin only\n'),
+  'file in a new area of plugin/': input => stagePluginFile(input, 'plugin/commands/design.md', 'Command\n'),
   'unclassified plugin entry': input => stagePluginFile(input, 'plugin/README.md', 'Readme\n'),
+  'stale exclusion': input => { input.pluginListing = input.pluginListing.filter(entry => entry !== 'plugin/.grok-plugin/plugin.json'); },
 };
 
 test('check runs the build checks without a reservation and fails wherever build fails', () => {
@@ -28,6 +30,7 @@ test('check runs the build checks without a reservation and fails wherever build
   const check = checkEnrollment(input);
   assert.equal(check.inputsSha256, input.reservation.binding.inputsSha256, 'a later reservation binds the checked inputs');
   assert.equal(check.claude, true);
+  assert.deepEqual(check.pluginTree, buildCandidate(input).candidate.claude.pluginTree);
   assert.deepEqual(check.upstream, { version: '4.8.0', tag: 'skill-v4.8.0', commit: input.pin.commit });
   assert.equal(check.policySha256, buildCandidate(input).candidate.policySha256);
   assert.equal(checkEnrollment({ ...input, reservation: undefined, version: undefined }).inputsSha256, check.inputsSha256);

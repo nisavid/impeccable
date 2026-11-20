@@ -161,7 +161,7 @@ export function checkEnrollment(input) {
   return {
     schema: 1, upstream: { version: pin.version, tag: pin.tag, commit: pin.commit }, procedureRevision,
     inputsSha256: hash(jsonBytes({ pin, policy })), policySha256: result.candidate.policySha256,
-    claude: Boolean(result.claude), checks: result.candidate.checks,
+    claude: Boolean(result.claude), ...(result.claude && { pluginTree: result.candidate.claude.pluginTree }), checks: result.candidate.checks,
   };
 }
 

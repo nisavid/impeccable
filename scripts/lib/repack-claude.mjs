@@ -148,6 +148,9 @@ export function buildClaudePackage({ archive, codexSkill, policy, pins: pinList,
   requireEnrollment(claude);
   const pins = classifyPins(pinList);
   requireCompleteInventory(pluginListing, claude);
+  // The staged listing equals the enrolled pins and exclusions, which the
+  // reservation binds through the policy; the records identify it as well.
+  const pluginTree = { listingSha256: hash(jsonBytes([...pluginListing].sort())), files: pluginListing.length, excludedSourcePaths: claude.excludedSourcePaths };
   const archiveFiles = new Map(archive.map(file => [file.name, file]));
   const skill = claudeSkill(archive, claude, pins.skill);
   requireEnrolledRuntime(skill, codexSkill, policy);
@@ -181,6 +184,7 @@ export function buildClaudePackage({ archive, codexSkill, policy, pins: pinList,
   const release = {
     schema: 1,
     format: 'claude-code-plugin',
+    pluginTree,
     ...provenance,
     transformations: [
       'Reproduce the pinned upstream plugin skill, agents, and hooks exactly, taking each file from the signed Claude provider copy where it hashes to the pin and from the source commit otherwise.',
@@ -212,6 +216,7 @@ export function buildClaudePackage({ archive, codexSkill, policy, pins: pinList,
     provenanceSha256: hash(jsonBytes(release)),
     agents: [...pins.agents.keys()].sort(),
     hookEvents: Object.keys(claude.hooks.hooks).sort(),
+    pluginTree,
     tree: inventory(tree),
   };
   return { files: tree, catalog, record };

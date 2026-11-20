@@ -93,7 +93,7 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
       projectHooksPath: '.claude/settings.json',
       hooks: JSON.parse(claudeSources.find(entry => entry.name === 'plugin/hooks/hooks.json').bytes),
       sourceFiles: claudeSources.map(f => ({ path: f.name, mode: f.mode, sha256: sha256(f.bytes) })),
-      excludedSourcePaths: ['plugin/.claude-plugin/plugin.json'],
+      excludedSourcePaths: ['plugin/.claude-plugin/plugin.json', 'plugin/.grok-plugin/plugin.json'],
     };
   }
   const procedureRevision = 'c'.repeat(40);
@@ -102,7 +102,10 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
   const reservation = { schema: 1, version, upstream: pin.version, binding: { procedureRevision, inputsSha256: sha256(json({ pin, policy })) }, advance: false, exposureInventory, exposureInventorySha256: sha256(json(exposureInventory)) };
   const sourceRecords = [...sources, ...(claude ? claudeSources : [])].map(f => ({ path: f.name, bytes: f.bytes, mode: f.mode }));
   // The staged plugin tree also holds files outside the inventory, such as upstream's manifest.
-  const stagedOnly = claude ? [{ path: 'plugin/.claude-plugin/plugin.json', bytes: json({ ...manifest, skills: './skills/' }), mode: 0o644 }] : [];
+  const stagedOnly = claude ? [
+    { path: 'plugin/.claude-plugin/plugin.json', bytes: json({ ...manifest, skills: './skills/' }), mode: 0o644 },
+    { path: 'plugin/.grok-plugin/plugin.json', bytes: json({ name: manifest.name, version: manifest.version }), mode: 0o644 },
+  ] : [];
   const pluginListing = claude ? [...claudeSources.map(f => f.name), ...stagedOnly.map(f => f.path)].sort() : undefined;
   return { universal, signature, sources: sourceRecords, stagedOnly, pluginListing, pin, policy, version, procedureRevision, reservation };
 }
