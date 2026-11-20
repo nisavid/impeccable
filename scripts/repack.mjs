@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildCandidate, jsonBytes } from './lib/repack-package.mjs';
 import { safePath } from './lib/repack-zip.mjs';
 import { CLAUDE_MARKETPLACE_DIRECTORY } from './lib/repack-claude.mjs';
+import { commitSnapshot } from './lib/repack-git-commit.mjs';
 
 export { allocateVersion, selectRelease } from './lib/repack-version.mjs';
 import { allocateVersion, requireExposureInventory, selectRelease } from './lib/repack-version.mjs';
@@ -168,10 +169,30 @@ export function validateCandidate(input, output) {
   return result.candidate;
 }
 
+// Commit the validated Claude marketplace tree of a retained candidate. The
+// request carries every Git condition and identity explicitly; relative
+// buildRequest and output paths resolve from the request file's directory.
+export function commitCandidate(filename) {
+  const request = readJson(filename);
+  const resolve = name => path.resolve(path.dirname(filename), name);
+  if (typeof request.buildRequest !== 'string' || typeof request.output !== 'string') throw new Error('Commit request needs buildRequest and output.');
+  const input = loadBuildRequest(resolve(request.buildRequest));
+  const output = resolve(request.output);
+  validateCandidate(input, output);
+  const prefix = `${CLAUDE_MARKETPLACE_DIRECTORY}/`;
+  const files = outputFiles(buildCandidate(input)).filter(file => file.name.startsWith(prefix)).map(file => ({ ...file, name: file.name.slice(prefix.length) }));
+  if (!files.length) throw new Error('Candidate has no Claude marketplace tree.');
+  return commitSnapshot({
+    git: request.git, repository: request.repository, hooksDirectory: request.hooksDirectory, objectFormat: request.objectFormat,
+    ref: request.branch, createRepository: request.createRepository === true, files,
+    author: request.author, committer: request.committer, message: request.message,
+  });
+}
+
 async function main() {
   const [verb, filename, output, ...extra] = process.argv.slice(2);
-  if (extra.length || !filename || !['select', 'allocate', 'reserve', 'build', 'validate'].includes(verb) || (['build', 'validate'].includes(verb) ? !output : output !== undefined)) {
-    console.error('Usage: node scripts/repack.mjs <select|allocate|reserve> <request.json> OR <build|validate> <build-request.json> <output-directory>');
+  if (extra.length || !filename || !['select', 'allocate', 'reserve', 'build', 'validate', 'commit'].includes(verb) || (['build', 'validate'].includes(verb) ? !output : output !== undefined)) {
+    console.error('Usage: node scripts/repack.mjs <select|allocate|reserve|commit> <request.json> OR <build|validate> <build-request.json> <output-directory>');
     process.exitCode = 2;
     return;
   }
@@ -184,6 +205,8 @@ async function main() {
     } else if (verb === 'reserve') {
       const request = readJson(filename);
       result = { outcome: 'reserved', reservation: reserveCandidate(request) };
+    } else if (verb === 'commit') {
+      result = { outcome: 'committed', commit: commitCandidate(filename) };
     } else {
       const input = loadBuildRequest(filename);
       result = { outcome: verb === 'build' ? 'candidate' : 'validated', candidate: verb === 'build' ? writeCandidate(input, output) : validateCandidate(input, output) };
