@@ -20,6 +20,7 @@ export function requireExposureInventory(inventory) {
 }
 
 export function allocateVersion(upstream, inventory, { advance = false } = {}) {
+  if (typeof advance !== 'boolean') throw new Error('Advance must be true, false, or absent.');
   const base = numeric(upstream);
   requireExposureInventory(inventory);
   const identities = new Map();

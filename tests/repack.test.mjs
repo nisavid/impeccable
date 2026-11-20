@@ -26,6 +26,15 @@ test('allocates matching upstream version, then monotonic packaging and upstream
   ] }), /conflict/i);
 });
 
+test('accepts only a boolean or absent advance flag', () => {
+  const inventory = { complete: true, records: [] };
+  assert.equal(allocateVersion('4.8.0', inventory, {}), '4.8.0');
+  assert.equal(allocateVersion('4.8.0', inventory, { advance: undefined }), '4.8.0');
+  for (const advance of ['false', 'true', 0, 1, null, {}]) {
+    assert.throws(() => allocateVersion('4.8.0', inventory, { advance }), /Advance must be true, false, or absent/);
+  }
+});
+
 test('selects numerically highest stable skill release only after complete enumeration', () => {
   const listing = { complete: true, releases: [
     { id: 1, tag_name: 'skill-v4.9.0', draft: false, prerelease: false },
