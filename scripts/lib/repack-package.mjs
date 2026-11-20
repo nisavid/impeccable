@@ -198,7 +198,7 @@ function assembleCandidate(input) {
   ], inputMapping: skill.map(file => ({ source: `${policy.skillPrefix}${file.name}`, destination: `skills/impeccable/${file.name}`, mode: file.mode, sha256: hash(file.bytes) })), inventory: inventory(payload) };
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
   const claude = claudePins && buildClaudePackage({
-    archive, codexSkill: skill, policy, pins: claudePins, sourceMap, manifest, version,
+    archive, codexSkill: skill, policy, pins: claudePins, pluginListing: input.pluginListing, sourceMap, manifest, version,
     provenance: { upstream: pin, procedureRevision, reservationSha256, allocation, policySha256: provenance.policySha256, signature, capabilities },
   });
   const bytes = writeZip(payload);

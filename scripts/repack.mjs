@@ -92,6 +92,23 @@ function readSupplemental(sourceRoot, sourcePath) {
   return { bytes: readFileSync(current), mode: info.mode & 0o100 ? 0o755 : 0o644 };
 }
 
+// Every regular file under sourceRoot/<directory>, as sourceRoot-relative paths.
+function listStagedFiles(sourceRoot, directory) {
+  const root = path.join(sourceRoot, directory);
+  if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) return [];
+  const files = [];
+  (function walk(current, prefix) {
+    for (const name of readdirSync(current).sort()) {
+      const info = lstatSync(path.join(current, name));
+      if (info.isSymbolicLink()) throw new Error('Supplemental source links are unsupported.');
+      if (info.isDirectory()) walk(path.join(current, name), `${prefix}${name}/`);
+      else if (info.isFile()) files.push(`${prefix}${name}`);
+      else throw new Error('Supplemental source must be a regular file.');
+    }
+  })(root, `${directory}/`);
+  return files;
+}
+
 const readJson = filename => JSON.parse(readFileSync(filename, 'utf8'));
 function readRequest(filename) {
   const request = readJson(filename);
@@ -103,7 +120,8 @@ function readInputs({ request, resolve, pin, policy }) {
   const sourceRoot = resolve(request.sourceRoot);
   if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
   const sources = sourcePins(pin, policy).map(expected => ({ path: expected.path, ...readSupplemental(sourceRoot, expected.path) }));
-  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, procedureRevision: request.procedureRevision };
+  const pluginListing = Object.hasOwn(policy, 'claude') ? listStagedFiles(sourceRoot, 'plugin') : undefined;
+  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, pluginListing, procedureRevision: request.procedureRevision };
 }
 
 // A check request is a build request without a reservation.

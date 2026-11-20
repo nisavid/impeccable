@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readZip } from '../scripts/lib/repack-zip.mjs';
 import { buildCandidate } from '../scripts/lib/repack-package.mjs';
 import { sha256, validateCandidate, writeCandidate } from '../scripts/repack.mjs';
-import { claudePluginAgent, claudePluginSkill, claudeProjectSkill, file, fixture, json, rebind, repin, source, sourcePin, stageSources, unpin } from './lib/repack-fixture.mjs';
+import { claudePluginAgent, claudePluginSkill, claudeProjectSkill, file, fixture, json, rebind, repin, source, sourcePin, stagePluginFile, stageSources, unpin } from './lib/repack-fixture.mjs';
 
 const claudeFiles = result => new Map(result.claude.files.map(entry => [entry.name, entry]));
 const plugin = 'plugins/impeccable/';
@@ -156,10 +156,27 @@ test('fails closed on changed, missing, malformed, or unsafe Claude inputs', () 
 
   // The pinned inventory and the signed Claude copy must hold the same paths.
   rejects(unpin(fixture(), 'plugin/skills/impeccable/reference/guide.md'), /Claude skill inventory differs from the pinned upstream plugin inventory/);
-  const extra = fixture();
-  extra.sources.push({ path: 'plugin/skills/impeccable/reference/new.md', bytes: Buffer.from('New\n'), mode: 0o644 });
-  extra.policy.claude.sourceFiles.push({ path: 'plugin/skills/impeccable/reference/new.md', mode: 0o644, sha256: sha256('New\n') });
-  rejects(rebind(extra), /Claude skill inventory differs from the pinned upstream plugin inventory/);
+  rejects(stagePluginFile(fixture(), 'plugin/skills/impeccable/reference/new.md', 'New\n', { pin: true }), /Claude skill inventory differs from the pinned upstream plugin inventory/);
+
+  // The enrollment equals the staged plugin tree: a plugin-only file in neither the
+  // archive nor the pins, an unclassified plugin entry, and a stale pin or exclusion all fail.
+  for (const path of ['plugin/skills/impeccable/reference/plugin-only.md', 'plugin/agents/plugin-only.md', 'plugin/README.md']) {
+    rejects(stagePluginFile(fixture(), path, 'Plugin only\n'), new RegExp(`Staged plugin file is not enrolled: ${path.replaceAll('.', '\\.')}`));
+  }
+  const stalePin = fixture();
+  stalePin.pluginListing = stalePin.pluginListing.filter(entry => entry !== 'plugin/agents/impeccable-documenter.md');
+  rejects(stalePin, /Enrolled plugin path is missing from the staged plugin tree: plugin\/agents\/impeccable-documenter\.md/);
+  const staleExclusion = fixture();
+  staleExclusion.pluginListing = staleExclusion.pluginListing.filter(entry => entry !== 'plugin/.claude-plugin/plugin.json');
+  rejects(staleExclusion, /Enrolled plugin path is missing from the staged plugin tree: plugin\/\.claude-plugin\/plugin\.json/);
+  for (const excluded of ['plugin/hooks/hooks.json', 'plugin/agents/x.md', 'plugin/skills/impeccable/x.md', 'other/x.json']) {
+    const input = fixture();
+    input.policy.claude.excludedSourcePaths = [excluded, ...input.policy.claude.excludedSourcePaths].sort();
+    rejects(rebind(input), /Claude exclusion must name a plugin file outside the skill, agents, and hooks/);
+  }
+  const unlistedTree = fixture();
+  delete unlistedTree.pluginListing;
+  rejects(unlistedTree, /A staged listing of the plugin tree is required/);
   rejects(unpin(fixture(), 'plugin/hooks/hooks.json'), /Claude hooks source required/);
 
   // A non-markdown upstream plugin file that differs from the signed copy is taken from
@@ -191,6 +208,7 @@ test('fails closed on changed, missing, malformed, or unsafe Claude inputs', () 
     rejects(rebind(input), /Unsafe archive path/);
   }
   for (const unsupported of ['plugin/other.txt', 'plugin/agents/nested/x.md']) {
+    // Pinning a path outside the three inventory shapes fails before completeness.
     const input = fixture();
     input.sources.push({ path: unsupported, bytes: Buffer.from('Extra\n'), mode: 0o644 });
     input.policy.claude.sourceFiles.push({ path: unsupported, mode: 0o644, sha256: sha256('Extra\n') });

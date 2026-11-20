@@ -93,6 +93,7 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
       projectHooksPath: '.claude/settings.json',
       hooks: JSON.parse(claudeSources.find(entry => entry.name === 'plugin/hooks/hooks.json').bytes),
       sourceFiles: claudeSources.map(f => ({ path: f.name, mode: f.mode, sha256: sha256(f.bytes) })),
+      excludedSourcePaths: ['plugin/.claude-plugin/plugin.json'],
     };
   }
   const procedureRevision = 'c'.repeat(40);
@@ -100,7 +101,10 @@ export function fixture(changeSkill = () => {}, runtimeOrigins = [], { claude = 
   const exposureInventory = { complete: true, records: [{ version: '4.8.0' }] };
   const reservation = { schema: 1, version, upstream: pin.version, binding: { procedureRevision, inputsSha256: sha256(json({ pin, policy })) }, advance: false, exposureInventory, exposureInventorySha256: sha256(json(exposureInventory)) };
   const sourceRecords = [...sources, ...(claude ? claudeSources : [])].map(f => ({ path: f.name, bytes: f.bytes, mode: f.mode }));
-  return { universal, signature, sources: sourceRecords, pin, policy, version, procedureRevision, reservation };
+  // The staged plugin tree also holds files outside the inventory, such as upstream's manifest.
+  const stagedOnly = claude ? [{ path: 'plugin/.claude-plugin/plugin.json', bytes: json({ ...manifest, skills: './skills/' }), mode: 0o644 }] : [];
+  const pluginListing = claude ? [...claudeSources.map(f => f.name), ...stagedOnly.map(f => f.path)].sort() : undefined;
+  return { universal, signature, sources: sourceRecords, stagedOnly, pluginListing, pin, policy, version, procedureRevision, reservation };
 }
 
 // Recompute the reservation's input binding after a test edits the pin or policy.
@@ -123,9 +127,10 @@ export function repin(input, path, { bytes, mode } = {}) {
   return rebind(input);
 }
 
-// Drop a source file and its pin.
+// Drop a source file and its pin, as if upstream's plugin tree lacked it.
 export function unpin(input, path) {
   input.sources = input.sources.filter(entry => entry.path !== path);
+  if (input.pluginListing) input.pluginListing = input.pluginListing.filter(entry => entry !== path);
   for (const list of [input.pin.sourceFiles, input.policy.claude?.sourceFiles ?? []]) {
     const index = list.findIndex(entry => entry.path === path);
     if (index >= 0) list.splice(index, 1);
@@ -136,8 +141,21 @@ export function unpin(input, path) {
 // Stage every source file under root/<prefix>. Only the owner execute bit
 // carries meaning, so other permission bits follow the caller's umask.
 export function stageSources(input, put, prefix = 'source') {
-  for (const entry of input.sources) {
+  for (const entry of [...input.sources, ...(input.stagedOnly ?? [])]) {
     const filename = put(`${prefix}/${entry.path}`, entry.bytes);
     if (entry.mode & 0o100) chmodSync(filename, 0o755);
   }
+}
+
+// Add a file to the staged plugin tree, pinned or not.
+export function stagePluginFile(input, path, bytes, { pin = false } = {}) {
+  const entry = { path, bytes: Buffer.from(bytes), mode: 0o644 };
+  if (pin) {
+    input.sources.push(entry);
+    input.policy.claude.sourceFiles.push({ path, mode: 0o644, sha256: sha256(entry.bytes) });
+  } else {
+    input.stagedOnly.push(entry);
+  }
+  input.pluginListing = [...input.pluginListing, path].sort();
+  return rebind(input);
 }

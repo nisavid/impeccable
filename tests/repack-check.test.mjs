@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildCandidate, checkEnrollment } from '../scripts/lib/repack-package.mjs';
-import { fixture, json, rebind, repin, source, stageSources, unpin } from './lib/repack-fixture.mjs';
+import { fixture, json, rebind, repin, source, stagePluginFile, stageSources, unpin } from './lib/repack-fixture.mjs';
 
 // Each case breaks one input or enrollment check that build runs.
 const cases = {
@@ -19,6 +19,8 @@ const cases = {
   'Claude runtime differing from Codex': input => repin(input, 'plugin/skills/impeccable/scripts/impeccable', { bytes: '#!/bin/sh\nexit 0\n' }),
   'changed Claude hooks enrollment': input => { input.policy.claude.hooks.hooks.Stop[0].hooks[0].timeout = 31; },
   'old Claude enrollment shape': input => { input.policy.claude.agents = ['impeccable-documenter.md']; },
+  'plugin-only file in neither the archive nor the pins': input => stagePluginFile(input, 'plugin/skills/impeccable/reference/plugin-only.md', 'Plugin only\n'),
+  'unclassified plugin entry': input => stagePluginFile(input, 'plugin/README.md', 'Readme\n'),
 };
 
 test('check runs the build checks without a reservation and fails wherever build fails', () => {
@@ -99,4 +101,18 @@ test('CLI check requires a procedure revision', t => {
   const missing = run('check', put('missing.json', json({ ...request, procedureRevision: undefined })));
   assert.equal(missing.status, 1);
   assert.match(JSON.parse(missing.stderr).error, /Procedure revision must be supplied/);
+});
+
+test('CLI check and build both refuse a staged plugin file the enrollment omits', t => {
+  const { input, root, put, run, request, checkFile } = inputs(t);
+  put('source/plugin/agents/plugin-only.md', 'Plugin only\n');
+  const failedCheck = run('check', checkFile);
+  assert.equal(failedCheck.status, 1);
+  const checkError = JSON.parse(failedCheck.stderr).error;
+  assert.equal(checkError, 'Staged plugin file is not enrolled: plugin/agents/plugin-only.md');
+  put(`reservations/repack-v${input.version}.json`, json(input.reservation));
+  const failedBuild = run('build', put('build.json', json({ ...request, reservation: `reservations/repack-v${input.version}.json` })), path.join(root, 'candidate'));
+  assert.equal(failedBuild.status, 1);
+  assert.equal(JSON.parse(failedBuild.stderr).error, checkError);
+  assert.equal(readdirSync(root).includes('candidate'), false);
 });

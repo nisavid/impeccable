@@ -15,16 +15,37 @@ const HOOKS_SOURCE = 'plugin/hooks/hooks.json';
 const SKILL_SOURCE_PREFIX = 'plugin/skills/impeccable/';
 const AGENT_SOURCE_PREFIX = 'plugin/agents/';
 
-const ENROLLMENT_KEYS = ['agentsPrefix', 'hooks', 'projectHooksPath', 'skillPrefix', 'sourceFiles'];
+const ENROLLMENT_KEYS = ['agentsPrefix', 'excludedSourcePaths', 'hooks', 'projectHooksPath', 'skillPrefix', 'sourceFiles'];
 
 function requireEnrollment(claude) {
   if (!claude || typeof claude !== 'object' || Object.keys(claude).sort().join() !== ENROLLMENT_KEYS.join() ||
       typeof claude.skillPrefix !== 'string' || typeof claude.agentsPrefix !== 'string' || typeof claude.projectHooksPath !== 'string' ||
-      !claude.hooks || typeof claude.hooks !== 'object' || !Array.isArray(claude.sourceFiles)) {
+      !claude.hooks || typeof claude.hooks !== 'object' || !Array.isArray(claude.sourceFiles) ||
+      !Array.isArray(claude.excludedSourcePaths) || claude.excludedSourcePaths.some(entry => typeof entry !== 'string')) {
     fail('Complete Claude enrollment required.');
   }
   safePath(claude.skillPrefix, true); safePath(claude.agentsPrefix, true); safePath(claude.projectHooksPath);
   if (!claude.skillPrefix.endsWith('/') || !claude.agentsPrefix.endsWith('/')) fail('Unsupported Claude layout enrollment.');
+  same(claude.excludedSourcePaths, [...new Set(claude.excludedSourcePaths)].sort(), 'Claude exclusions must be sorted and unique.');
+  for (const excluded of claude.excludedSourcePaths) {
+    safePath(excluded);
+    if (!excluded.startsWith('plugin/') || excluded === HOOKS_SOURCE || excluded.startsWith(AGENT_SOURCE_PREFIX) || excluded.startsWith(SKILL_SOURCE_PREFIX)) {
+      fail(`Claude exclusion must name a plugin file outside the skill, agents, and hooks: ${excluded}`);
+    }
+  }
+}
+
+// The staged listing is every file of the selected commit's plugin/ subtree.
+// Each must be pinned or on the reviewed exclusion list, and each pinned or
+// excluded path must be staged, so a plugin-only file cannot go unenrolled.
+function requireCompleteInventory(listing, claude) {
+  if (!Array.isArray(listing) || listing.some(entry => typeof entry !== 'string')) fail('A staged listing of the plugin tree is required.');
+  const enrolled = new Set([...claude.sourceFiles.map(pin => pin.path), ...claude.excludedSourcePaths]);
+  const staged = new Set(listing);
+  const unlisted = listing.filter(entry => !enrolled.has(entry)).sort();
+  if (unlisted.length) fail(`Staged plugin file is not enrolled: ${unlisted[0]}`);
+  const missing = [...enrolled].filter(entry => !staged.has(entry)).sort();
+  if (missing.length) fail(`Enrolled plugin path is missing from the staged plugin tree: ${missing[0]}`);
 }
 
 // The enrollment pins upstream's complete plugin skill, agents, and hooks at
@@ -122,10 +143,11 @@ function claudeAgents(archive, claude, pins) {
   return [...pins].map(([name, pin]) => ({ name, ...pinned(pin, files.get(name), `${claude.agentsPrefix}${name}`) }));
 }
 
-export function buildClaudePackage({ archive, codexSkill, policy, pins: pinList, sourceMap, manifest, version, provenance }) {
+export function buildClaudePackage({ archive, codexSkill, policy, pins: pinList, pluginListing, sourceMap, manifest, version, provenance }) {
   const { claude } = policy;
   requireEnrollment(claude);
   const pins = classifyPins(pinList);
+  requireCompleteInventory(pluginListing, claude);
   const archiveFiles = new Map(archive.map(file => [file.name, file]));
   const skill = claudeSkill(archive, claude, pins.skill);
   requireEnrolledRuntime(skill, codexSkill, policy);
