@@ -68,7 +68,7 @@ function candidateTree(input = fixture()) {
   return buildCandidate(input).claude.files.map(file => ({ ...file }));
 }
 
-function commitRequest(t, root, hooks, overrides = {}) {
+function commitRequest(root, hooks, overrides = {}) {
   const input = fixture();
   const output = path.join(root, 'candidate');
   writeCandidate(input, output);
@@ -89,7 +89,7 @@ const runCli = (requestFile, env) => spawnSync(process.execPath, [fileURLToPath(
 test('commits the validated Claude tree in a fresh store with no planted hook, filter, or signer active', { skip }, t => {
   const { root, hooks } = scratch(t);
   const planted = plantedEnvironment(root);
-  const { input, requestFile, request } = commitRequest(t, root, hooks);
+  const { input, requestFile, request } = commitRequest(root, hooks);
   const result = runCli(requestFile, planted.env);
   assert.equal(result.status, 0, result.stderr);
   const { outcome, commit } = JSON.parse(result.stdout);
@@ -215,9 +215,22 @@ test('settles whether plumbing commit creation honors signing configuration', { 
   const explicit = unfenced(['commit-tree', '-S', tree]);
   const signed = id => /^gpgsig/m.test(fenced([`--git-dir=${store}`, 'cat-file', 'commit', id.trim()]).stdout);
   const calls = () => existsSync(planted.log) ? readFileSync(planted.log, 'utf8').split('\n').filter(line => line.startsWith('fake-gpg')).length : 0;
-  const observation = { git: fenced(['--version']).stdout.trim(), implicitSigned: signed(implicit.stdout), explicitSigned: signed(explicit.stdout), gpgCalls: calls() };
+  // Repository configuration: plant signing in the scratch store's own config and
+  // ask commit-tree directly, since the step's preflight refuses such keys.
+  const local = path.join(root, 'local-signing.git');
+  assert.equal(fenced(['init', '-q', '--bare', '--template=', '--object-format=sha1', local]).status, 0);
+  for (const [key, value] of [['commit.gpgSign', 'true'], ['gpg.program', path.join(root, 'fake-gpg')], ['user.signingKey', 'FAKEKEY']]) {
+    assert.equal(fenced([`--git-dir=${local}`, 'config', key, value]).status, 0);
+  }
+  const localImplicit = fenced([`--git-dir=${local}`, 'commit-tree', tree], { input: 'msg\n', env: identity });
+  assert.equal(localImplicit.status, 0, localImplicit.stderr);
+  const localSigned = /^gpgsig/m.test(fenced([`--git-dir=${local}`, 'cat-file', 'commit', localImplicit.stdout.trim()]).stdout);
+  const observation = { git: fenced(['--version']).stdout.trim(), globalImplicitSigned: signed(implicit.stdout), localImplicitSigned: localSigned, explicitSigned: signed(explicit.stdout), gpgCalls: calls() };
   t.diagnostic(JSON.stringify(observation));
   assert.equal(observation.explicitSigned, true, 'the planted signer is live when signing is requested');
+  assert.equal(observation.globalImplicitSigned, false, 'commit-tree ignores commit.gpgSign in global configuration');
+  assert.equal(observation.localImplicitSigned, false, 'commit-tree ignores commit.gpgSign in repository configuration');
+  assert.equal(observation.gpgCalls, 1, 'only the explicit -S request ran the signer');
   // The step never relies on that default: it passes --no-gpg-sign and excludes global configuration.
   const before = calls();
   const result = commitSnapshot({ git: GIT, repository: path.join(root, 'step.git'), hooksDirectory: hooks, objectFormat: 'sha1', ref: 'refs/heads/snapshot', createRepository: true, files: candidateTree(), author, committer, message });
@@ -227,7 +240,7 @@ test('settles whether plumbing commit creation honors signing configuration', { 
 
 test('validates the retained candidate before writing any object', { skip }, t => {
   const { root, hooks } = scratch(t);
-  const { output, requestFile, request } = commitRequest(t, root, hooks);
+  const { output, requestFile, request } = commitRequest(root, hooks);
   const hooksFile = path.join(output, 'claude-marketplace/plugins/impeccable/hooks/hooks.json');
   writeFileSync(hooksFile, `${readFileSync(hooksFile, 'utf8')} `);
   const result = runCli(requestFile, { PATH: process.env.PATH });
