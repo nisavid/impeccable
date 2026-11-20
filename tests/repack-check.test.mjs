@@ -67,7 +67,12 @@ function inputs(t) {
   const request = { universal: 'universal.zip', signature: 'signature.json', pin: 'pin.json', policy: 'policy.json', sourceRoot: 'source', procedureRevision: input.procedureRevision };
   const checkFile = put('check.json', json(request));
   const command = fileURLToPath(new URL('../scripts/repack.mjs', import.meta.url));
-  const run = (...args) => spawnSync(process.execPath, [command, ...args], { encoding: 'utf8', cwd: root });
+  // Bounded, so a regression that reads a staged FIFO fails instead of hanging.
+  const run = (...args) => {
+    const result = spawnSync(process.execPath, [command, ...args], { encoding: 'utf8', cwd: root, timeout: 30_000, killSignal: 'SIGKILL' });
+    assert.equal(result.error, undefined, `repack ${args[0]} did not complete: ${result.error?.message}`);
+    return result;
+  };
   return { input, root, put, run, request, checkFile };
 }
 
