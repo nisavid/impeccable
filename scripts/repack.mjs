@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCandidate, jsonBytes, sourcePins } from './lib/repack-package.mjs';
+import { buildCandidate, checkEnrollment, jsonBytes, sourcePins } from './lib/repack-package.mjs';
 import { safePath } from './lib/repack-zip.mjs';
 import { CLAUDE_MARKETPLACE_DIRECTORY } from './lib/repack-claude.mjs';
 import { commitSnapshot } from './lib/repack-git-commit.mjs';
@@ -93,21 +93,36 @@ function readSupplemental(sourceRoot, sourcePath) {
 }
 
 const readJson = filename => JSON.parse(readFileSync(filename, 'utf8'));
-export function loadBuildRequest(filename) {
+function readRequest(filename) {
   const request = readJson(filename);
   const resolve = name => path.resolve(path.dirname(filename), name);
-  const pin = readJson(resolve(request.pin));
-  const policy = readJson(resolve(request.policy));
+  return { request, resolve, pin: readJson(resolve(request.pin)), policy: readJson(resolve(request.policy)) };
+}
+
+function readInputs({ request, resolve, pin, policy }) {
+  const sourceRoot = resolve(request.sourceRoot);
+  if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
+  const sources = sourcePins(pin, policy).map(expected => ({ path: expected.path, ...readSupplemental(sourceRoot, expected.path) }));
+  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, procedureRevision: request.procedureRevision };
+}
+
+// A check request is a build request without a reservation.
+export function loadCheckRequest(filename) {
+  const loaded = readRequest(filename);
+  if (!isProcedureRevision(loaded.request.procedureRevision)) throw new Error('Procedure revision must be supplied.');
+  return readInputs(loaded);
+}
+
+export function loadBuildRequest(filename) {
+  const loaded = readRequest(filename);
+  const { request, resolve, pin, policy } = loaded;
   const { reservation } = readReservation(resolve(request.reservation));
   if (reservation.schema !== 1 || reservation.upstream !== pin.version || reservation.binding?.inputsSha256 !== sha256(jsonBytes({ pin, policy })) || !/^[0-9a-f]{64}$/.test(reservation.exposureInventorySha256)) throw new Error('Reservation does not bind these pinned inputs and enrolled policy.');
   const { procedureRevision } = request;
   if (!isProcedureRevision(procedureRevision) || reservation.binding.procedureRevision !== procedureRevision) {
     throw new Error('Procedure revision must be supplied and match the reservation.');
   }
-  const sourceRoot = resolve(request.sourceRoot);
-  if (!lstatSync(sourceRoot).isDirectory()) throw new Error('Supplemental source root must be a directory.');
-  const sources = sourcePins(pin, policy).map(expected => ({ path: expected.path, ...readSupplemental(sourceRoot, expected.path) }));
-  return { universal: readFileSync(resolve(request.universal)), signature: readFileSync(resolve(request.signature)), pin, policy, sources, reservation, version: reservation.version, procedureRevision };
+  return { ...readInputs(loaded), reservation, version: reservation.version };
 }
 
 function outputFiles(result) {
@@ -187,8 +202,8 @@ export function commitCandidate(filename) {
 
 async function main() {
   const [verb, filename, output, ...extra] = process.argv.slice(2);
-  if (extra.length || !filename || !['select', 'allocate', 'reserve', 'build', 'validate', 'commit'].includes(verb) || (['build', 'validate'].includes(verb) ? !output : output !== undefined)) {
-    console.error('Usage: node scripts/repack.mjs <select|allocate|reserve|commit> <request.json> OR <build|validate> <build-request.json> <output-directory>');
+  if (extra.length || !filename || !['select', 'allocate', 'check', 'reserve', 'build', 'validate', 'commit'].includes(verb) || (['build', 'validate'].includes(verb) ? !output : output !== undefined)) {
+    console.error('Usage: node scripts/repack.mjs <select|allocate|check|reserve|commit> <request.json> OR <build|validate> <build-request.json> <output-directory>');
     process.exitCode = 2;
     return;
   }
@@ -201,6 +216,8 @@ async function main() {
     } else if (verb === 'reserve') {
       const request = readJson(filename);
       result = { outcome: 'reserved', reservation: reserveCandidate(request) };
+    } else if (verb === 'check') {
+      result = { outcome: 'checked', check: checkEnrollment(loadCheckRequest(filename)) };
     } else if (verb === 'commit') {
       result = { outcome: 'committed', commit: commitCandidate(filename) };
     } else {

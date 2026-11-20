@@ -22,7 +22,7 @@ The catalog is named `nisavid-impeccable` so it can sit beside upstream's `impec
 
 Exposure starts at the first resolve of the snapshot by any client configuration, including an isolated one. Before that resolve:
 
-1. The version is reserved and the candidate record exists.
+1. The enrollment has passed the procedure's pre-reservation `check` on the real inputs, then the version is reserved and the candidate record exists.
 2. The marketplace snapshot is a local commit, and consumers pin it by full SHA.
 3. The delivery is entered in the exposure inventory as a private delivery.
 

@@ -94,6 +94,7 @@ export const SUITES = {
           'tests/repack-package.test.mjs',
           'tests/repack-claude.test.mjs',
           'tests/repack-git-commit.test.mjs',
+          'tests/repack-check.test.mjs',
           'tests/bundle-signing.test.mjs',
           'tests/skill-reference.test.mjs',
           'tests/lib/dev-keys.test.mjs',

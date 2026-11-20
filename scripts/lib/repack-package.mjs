@@ -149,6 +149,24 @@ function validateSkill(skill, policy) {
 export function buildCandidate(input) {
   const { pin, policy, version, procedureRevision, reservation } = input;
   if (reservation?.schema !== 1 || reservation.upstream !== pin.version || reservation.version !== version || reservation.binding?.procedureRevision !== procedureRevision || reservation.binding.inputsSha256 !== hash(jsonBytes({ pin, policy })) || reservation.exposureInventorySha256 !== hash(jsonBytes(reservation.exposureInventory)) || allocateVersion(pin.version, reservation.exposureInventory, { advance: reservation.advance }) !== version) fail('Reservation does not bind this allocation, procedure, and input identity.');
+  return assembleCandidate(input);
+}
+
+// Runs every input and enrollment check that build runs, on the same code
+// path, before any reservation exists. Outputs are assembled in memory under
+// the upstream version as a placeholder and discarded.
+export function checkEnrollment(input) {
+  const { pin, policy, procedureRevision } = input;
+  const result = assembleCandidate({ ...input, version: pin?.version, reservation: null });
+  return {
+    schema: 1, upstream: { version: pin.version, tag: pin.tag, commit: pin.commit }, procedureRevision,
+    inputsSha256: hash(jsonBytes({ pin, policy })), policySha256: result.candidate.policySha256,
+    claude: Boolean(result.claude), checks: result.candidate.checks,
+  };
+}
+
+function assembleCandidate(input) {
+  const { pin, policy, version, procedureRevision, reservation } = input;
   const { archive, sourceMap, claudePins, skill, signature, capabilities } = verifyInputs(input);
   const projectHooks = JSON.parse(checkedFile(new Map(archive.map(file => [file.name, file])), policy.projectHooksPath).bytes);
   const hooks = transformHooks(projectHooks, policy.projectSkillPath);
@@ -170,8 +188,9 @@ export function buildCandidate(input) {
   payload.push({ name: 'assets/icon.png', mode: 0o644, bytes: checkedFile(sourceMap, 'scripts/lib/assets/plugin-icon.png').bytes });
   for (const license of policy.licenseFiles) payload.push({ ...checkedFile(sourceMap, license.name) });
   for (const [name, value] of [['plugin.json', root], ['.codex-plugin/plugin.json', overlay], ['hooks/hooks.json', hooks]]) payload.push({ name, mode: 0o644, bytes: jsonBytes(value) });
-  const allocation = { version, upstream: pin.version, advance: reservation.advance ?? false, exposureInventorySha256: reservation.exposureInventorySha256, exposedVersions: [...new Set(reservation.exposureInventory.records.map(record => record.version))].sort() };
-  const provenance = { schema: 1, upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), allocation, policySha256: hash(jsonBytes(policy)), signature, capabilities, transformations: [
+  const allocation = reservation && { version, upstream: pin.version, advance: reservation.advance ?? false, exposureInventorySha256: reservation.exposureInventorySha256, exposedVersions: [...new Set(reservation.exposureInventory.records.map(record => record.version))].sort() };
+  const reservationSha256 = reservation && hash(jsonBytes(reservation));
+  const provenance = { schema: 1, upstream: pin, procedureRevision, reservationSha256, allocation, policySha256: hash(jsonBytes(policy)), signature, capabilities, transformations: [
     'Copy complete signed Codex skill subtree verbatim to skills/impeccable, retaining Unix modes.',
     'Copy source-bound license, notices, and icon; preserve upstream manifest authorship and metadata.',
     'Set wrapper repository and allocated repack version; add portable manifest and full OpenAI overlay.',
@@ -180,11 +199,11 @@ export function buildCandidate(input) {
   payload.push({ name: 'RELEASE.json', mode: 0o644, bytes: jsonBytes(provenance) });
   const claude = claudePins && buildClaudePackage({
     archive, codexSkill: skill, policy, pins: claudePins, sourceMap, manifest, version,
-    provenance: { upstream: pin, procedureRevision, reservationSha256: provenance.reservationSha256, allocation, policySha256: provenance.policySha256, signature, capabilities },
+    provenance: { upstream: pin, procedureRevision, reservationSha256, allocation, policySha256: provenance.policySha256, signature, capabilities },
   });
   const bytes = writeZip(payload);
   const catalog = { name: 'impeccable', interface: { displayName: 'Impeccable' }, plugins: [{ name: 'impeccable', source: { source: 'local', path: './plugins/impeccable' }, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }, category: 'Creativity' }] };
-  const candidate = { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256: hash(jsonBytes(reservation)), policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation checks inline angle-bracket destinations and bare destinations with balanced parentheses. It allows surrounding whitespace and optional quoted titles and skips code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] };
+  const candidate = { schema: 1, version, tag: `repack-v${version}`, qualification: 'required', upstream: pin, procedureRevision, reservationSha256, policySha256: provenance.policySha256, archive: { name: `impeccable-${version}.zip`, size: bytes.length, sha256: hash(bytes) }, inventory: inventory(payload), marketplaceCatalogSha256: hash(jsonBytes(catalog)), checks: { signature, payloadFidelity: true, archiveStructure: true }, limits: ['The caller verifies the executing procedure revision. The repacker compares the supplied revision with the reservation.', 'Source supplemental hashes identify inputs but do not independently authenticate their publisher.', 'Runtime-origin inventory recognizes literal http(s) origins only; dynamic behavior requires reviewed enrollment and runtime qualification.', 'Relative-link validation checks inline angle-bracket destinations and bare destinations with balanced parentheses. It allows surrounding whitespace and optional quoted titles and skips code spans and line-leading fences. Client discovery, hook delivery, engine execution, and synchronization require separate observations.'] };
   if (claude) {
     candidate.claude = claude.record;
     candidate.limits.push('The Claude tree equals the pinned upstream plugin inventory; files that differ from the signed archive come from the source commit, whose hashes identify inputs and do not authenticate their publisher. Client loading, hook delivery, and the local commit require separate observations.');

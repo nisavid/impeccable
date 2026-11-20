@@ -1,12 +1,23 @@
 # Build an Impeccable repack candidate
 
-`scripts/repack.mjs` reserves a version, builds a portable plugin archive and matching marketplace tree, optionally builds a Claude Code plugin tree and Claude marketplace catalog beside them, validates the retained bytes, and can commit the Claude marketplace tree to a local Git store. It performs no network requests, release uploads, remote ref or tag writes, or marketplace promotion. Use it from the independently reviewed procedure revision under the [acceptance plan](repack-acceptance-plan.md). A candidate remains unqualified until that plan's runtime and consumer observations pass.
+`scripts/repack.mjs` checks pinned inputs against the enrolled policy, reserves a version, builds a portable plugin archive and matching marketplace tree, optionally builds a Claude Code plugin tree and Claude marketplace catalog beside them, validates the retained bytes, and can commit the Claude marketplace tree to a local Git store. It performs no network requests, release uploads, remote ref or tag writes, or marketplace promotion. Use it from the independently reviewed procedure revision under the [acceptance plan](repack-acceptance-plan.md). A candidate remains unqualified until that plan's runtime and consumer observations pass.
 
 ## Invoke the offline CLI
 
-Pass a request filename to `select`, `allocate`, `reserve`, or `commit`. Pass a build request filename and output directory to `build` or `validate`. Relative command-line paths and the `directory` field in a reservation request resolve from the process working directory. Relative paths inside a build request resolve from that file's directory.
+Pass a request filename to `select`, `allocate`, `check`, `reserve`, or `commit`. Pass a build request filename and output directory to `build` or `validate`. Relative command-line paths and the `directory` field in a reservation request resolve from the process working directory. Relative paths inside a check, build, or commit request resolve from that file's directory.
 
-- Exit `0` writes one JSON line to stdout. Require the expected `outcome` before continuing. The commands return `{outcome: "selected", release}`, `{outcome: "allocated-preview", version}`, `{outcome: "reserved", reservation}`, `{outcome: "candidate", candidate}`, `{outcome: "validated", candidate}`, or `{outcome: "committed", commit}`, respectively.
+- Exit `0` writes one JSON line to stdout. Require the expected `outcome` before continuing:
+
+  | Command | Outcome |
+  | --- | --- |
+  | `select` | `{outcome: "selected", release}` |
+  | `allocate` | `{outcome: "allocated-preview", version}` |
+  | `check` | `{outcome: "checked", check}` |
+  | `reserve` | `{outcome: "reserved", reservation}` |
+  | `build` | `{outcome: "candidate", candidate}` |
+  | `validate` | `{outcome: "validated", candidate}` |
+  | `commit` | `{outcome: "committed", commit}` |
+
 - Exit `1` writes one JSON line to stderr with `outcome: "failed"`, an `error` message, and `lockCleanup` when reservation lock cleanup fails. The CLI supplies no general machine-readable error category.
 - Exit `2` writes a plain-text `Usage:` line to stderr before reading a request.
 
@@ -99,6 +110,16 @@ Add a `claude` object to the reviewed policy only for a Claude delivery. Without
 `sourceFiles` lists every file under `plugin/skills/impeccable/` and `plugin/agents/`, plus `plugin/hooks/hooks.json`, at the selected commit; produce it mechanically from that commit's tree. Agents and hooks must be `0644`. Stage every listed file under `sourceRoot` at its path and compare it with the selected commit's Git blob, as for the other supplemental files. The enrollment has exactly these five fields.
 
 The built plugin's skill, agents, and hooks equal that inventory exactly. The pinned skill and agent paths must equal the signed archive's `skillPrefix` and `agentsPrefix` paths, and a path in one and not the other fails the build. Each file comes from the signed archive when the archive's bytes and mode match the pin, and from the staged source-commit file otherwise; `RELEASE.json` records which. The skill's runtime files, executables, and required support files must equal the enrolled `runtimeFiles`, `executableFiles`, and `requiredSkillFiles`, apart from the Codex skill's own `agents/` folder, and every runtime or executable file must equal its Codex counterpart byte for byte and mode for mode. The hooks must equal `policy.claude.hooks`, keep upstream's Claude event set from `projectHooksPath`, and root every command at `${CLAUDE_PLUGIN_ROOT}`. As a second guard, no packaged markdown may name `.claude/skills/impeccable/scripts`. The Claude manifest keeps upstream authorship, description, and homepage, names the fork repository and the allocated version, carries the enrolled license and keywords only when upstream supplies them, and points `skills` at `./skills/`. The catalog `nisavid-impeccable` lists the plugin at `./plugins/impeccable` with the same version. The plugin's `RELEASE.json` records each transformation and every copied path, origin, hash, and mode.
+
+## Check the enrollment before reserving
+
+A reservation binds the pin, the policy, and the procedure revision, so an enrollment error found after reserving cannot be fixed under it. Run every check that `build` runs on the real inputs first, and reserve only after it passes:
+
+```sh
+node scripts/repack.mjs check check-request.json
+```
+
+A check request is a build request without `reservation`: `procedureRevision` and paths `universal`, `signature`, `pin`, `policy`, and `sourceRoot`. `check` loads the inputs as `build` does and runs the same verification and assembly code, using the upstream version as a placeholder for the allocated one. It verifies the asset pins and signature, the supplemental and Claude source pins, the runtime baseline and engine identity, the support links, the portable hooks and manifest, and, with Claude enrolled, the complete plugin inventory, the Claude runtime inventories, and the Claude hooks. It makes no reservation, writes no file, and discards the assembled outputs. Its `check.inputsSha256` is the value the reservation's `binding.inputsSha256` must carry. A failure stops the freeze before allocation; return it for a decision rather than reserving.
 
 ## Reserve one version
 
@@ -203,4 +224,4 @@ File-write failures can leave an incomplete new output directory; preserve it as
 
 Retain the commit request and the stdout receipt with the candidate evidence; together they record the identity, dates, message, and resulting commit and tree IDs. The same request against a fresh store reproduces the commit ID. A failure before `update-ref` leaves only unreferenced objects; a failure after it leaves the branch, which a retry must reconcile rather than overwrite. The step writes no index, working tree, `HEAD`, remote ref, or tag.
 
-Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs tests/repack-claude.test.mjs tests/repack-git-commit.test.mjs` after changing the allocator, builder, ZIP reader, commit step, or this procedure. The commit tests create stores only in temporary directories outside any repository and remove them. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.
+Run `node --test tests/repack.test.mjs tests/repack-archive.test.mjs tests/repack-package.test.mjs tests/repack-claude.test.mjs tests/repack-git-commit.test.mjs tests/repack-check.test.mjs` after changing the allocator, builder, ZIP reader, commit step, or this procedure. The commit tests create stores only in temporary directories outside any repository and remove them. The ZIP fixtures use fixed stored and deflated payloads and construct archive records independently of the repacker. These tests establish offline behavior; they do not supply release, consumer, synchronization, or scheduled-run evidence.
