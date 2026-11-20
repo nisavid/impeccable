@@ -1,5 +1,5 @@
 import { safePath } from './repack-zip.mjs';
-import { checkedFile, digest, fail, hash, inventory, isRuntimeFile, jsonBytes, requireSkillIdentity, same, validateSupportLinks } from './repack-common.mjs';
+import { checkedFile, fail, hash, inventory, isRuntimeFile, jsonBytes, requireSkillIdentity, same, validateSupportLinks } from './repack-common.mjs';
 
 // Catalog identity for the Claude marketplace snapshot. A distinct name keeps
 // the fork's catalog beside upstream's `impeccable` marketplace in one client
