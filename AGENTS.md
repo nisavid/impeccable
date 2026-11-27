@@ -2,7 +2,8 @@
 
 ## Fork scope
 
-Ivan's instructions govern issue and pull-request work in `nisavid/impeccable`.
+The instructions of the repository's owner or maintainer govern issue and
+pull-request work in `nisavid/impeccable`.
 The contribution restrictions below naming `pbakaus` and `abdulwahabone` apply
 to upstream `pbakaus/impeccable`. Follow them when contributing upstream.
 
@@ -12,10 +13,12 @@ Before using the engineering skills, read the
 ## Operating Policy
 
 - Perform assigned engineering and operations autonomously until stakeholder
-  policy or an unavailable control surface requires escalation. Ivan reserves
-  authority over project initiatives and the start or continuation of work
-  sessions. Within an active user-directed session, drive execution, review
-  loops, commits, publication, and cleanup unless escalation is required.
+  policy or an unavailable control surface requires escalation. The human
+  operator (the person these agents act for, never an agent that directs your
+  work) reserves authority over project initiatives and the start or
+  continuation of work sessions. Within an active user-directed session, drive
+  execution, review loops, commits, publication, and cleanup unless escalation
+  is required.
 - Escalate when an action affects stakeholder concerns and the stakeholder's
   policy is unknown or uncertain, or when a required action lacks an autonomous
   control surface.
